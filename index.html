@@ -140,21 +140,28 @@
 
   /* Plate */
   .plate-wrap{overflow-x:auto;}
-  table.plate{border-collapse:collapse; user-select:none;}
-  table.plate td{
-    width:34px; height:34px;
-    text-align:center;
-    padding:0;
+  table.plate{
+    border-collapse:collapse;
+    user-select:none;
+    width:100%;
+    table-layout:fixed;
   }
-  table.plate td.corner{font-family:'IBM Plex Mono'; font-size:10px; color:var(--muted);}
+  table.plate td{
+    text-align:center;
+    padding:2px 1px;
+  }
+  table.plate td.corner{font-family:'IBM Plex Mono'; font-size:9px; color:var(--muted);}
   table.plate td.colhead{
-    font-family:'IBM Plex Mono'; font-size:11px; color:var(--muted); font-weight:600;
+    font-family:'IBM Plex Mono'; font-size:9px; color:var(--muted); font-weight:600;
   }
   table.plate td.rowhead{
-    font-family:'IBM Plex Mono'; font-size:11px; color:var(--muted); font-weight:600;
+    font-family:'IBM Plex Mono'; font-size:9px; color:var(--muted); font-weight:600;
   }
   .well{
-    width:26px; height:26px;
+    width:78%;
+    aspect-ratio:1/1;
+    max-width:34px;
+    max-height:34px;
     border-radius:50%;
     margin:auto;
     border:1px solid #B9C1B6;
@@ -451,23 +458,50 @@
 
     if (hasData.size === 0) throw new Error('No valid Well/Cycle/RFU rows parsed.');
 
-    // default: everything with data starts ACTIVE (user deselects empties)
-    activeWells = new Set(hasData);
-
-    uploadStatus.textContent = rowCount + ' rows parsed \u2014 ' + hasData.size + ' wells with data.';
-    uploadStatus.classList.remove('err');
-
-    // set sensible default threshold range from data
+    // set the threshold slider's range from the data first
     const allRfu = [];
     Object.values(wellData).forEach(w => allRfu.push(...w.rfu));
     const maxRfu = Math.max(...allRfu);
     const slider = document.getElementById('threshSlider');
     slider.max = Math.ceil(maxRfu);
-    slider.value = Math.round(maxRfu * 0.15);
-    document.getElementById('threshVal').textContent = slider.value;
+
+    // auto-detect which wells actually show amplification and pre-select only
+    // those (sets activeWells + a sensible threshold based on baseline noise)
+    autoSelectSignalWells();
+
+    uploadStatus.textContent = rowCount + ' rows parsed \u2014 ' + hasData.size + ' wells with data, '
+      + activeWells.size + ' auto-selected as showing signal (threshold ' + slider.value + ' RFU). '
+      + 'Adjust the plate map or threshold if this needs correcting.';
+    uploadStatus.classList.remove('err');
 
     renderPlate();
     updateAll();
+  }
+
+  // Runs right after a file is parsed: estimates a threshold from baseline
+  // noise across all wells, then keeps only wells whose curve actually
+  // crosses it active. Wells that never rise above noise (no tube / no
+  // amplification) start deselected so the user doesn't have to click them
+  // off one by one.
+  function autoSelectSignalWells(){
+    const wells = Array.from(hasData);
+    if (!wells.length) return;
+
+    const stds = wells.map(w => computeBaseline(w).std);
+    const avgStd = stds.reduce((a,b)=>a+b,0) / stds.length;
+    const threshold = Math.max(avgStd * 10, 20);
+
+    const slider = document.getElementById('threshSlider');
+    slider.value = Math.round(threshold);
+    document.getElementById('threshVal').textContent = slider.value;
+
+    const signalWells = new Set();
+    wells.forEach(w => {
+      const {cycles, rfu} = getAdjustedCurve(w);
+      const cq = computeCq(cycles, rfu, threshold);
+      if (isFinite(cq)) signalWells.add(w);
+    });
+    activeWells = signalWells;
   }
 
   // ---------------- plate rendering ----------------
