@@ -1,0 +1,690 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>qPCR Plate Viewer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<style>
+  :root{
+    --bg: #F0F3EF;
+    --panel: #FFFFFF;
+    --ink: #1E2A24;
+    --muted: #6B7570;
+    --line: #D8DED7;
+    --teal: #0F6E6A;
+    --teal-dark: #0A4F4C;
+    --amber: #E8A33D;
+    --amber-dark: #B87E22;
+    --well-empty: #E4E8E2;
+    --well-off: #C7CEC3;
+    --danger: #B84C3E;
+    --radius: 6px;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    background:
+      linear-gradient(var(--line) 1px, transparent 1px) 0 0/28px 28px,
+      linear-gradient(90deg, var(--line) 1px, transparent 1px) 0 0/28px 28px,
+      var(--bg);
+    color:var(--ink);
+    font-family:'Inter', system-ui, sans-serif;
+    font-size:14px;
+    line-height:1.4;
+  }
+  header{
+    padding:20px 28px 16px 28px;
+    display:flex;
+    align-items:baseline;
+    justify-content:space-between;
+    flex-wrap:wrap;
+    gap:12px;
+    border-bottom:2px solid var(--ink);
+  }
+  header h1{
+    font-size:20px;
+    margin:0;
+    letter-spacing:-0.01em;
+  }
+  header h1 span{color:var(--teal);}
+  header .sub{
+    font-family:'IBM Plex Mono', monospace;
+    font-size:11px;
+    color:var(--muted);
+    text-transform:uppercase;
+    letter-spacing:0.08em;
+  }
+  .layout{
+    display:grid;
+    grid-template-columns:300px 1fr;
+    gap:20px;
+    padding:20px 28px 40px 28px;
+    align-items:start;
+  }
+  @media (max-width:900px){ .layout{grid-template-columns:1fr;} }
+
+  .panel{
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-radius:var(--radius);
+    padding:16px;
+    margin-bottom:16px;
+  }
+  .panel h2{
+    font-size:11px;
+    text-transform:uppercase;
+    letter-spacing:0.08em;
+    color:var(--muted);
+    margin:0 0 12px 0;
+    font-family:'IBM Plex Mono', monospace;
+  }
+  label.field{
+    display:block;
+    margin-bottom:12px;
+  }
+  label.field .name{
+    display:block;
+    font-size:12px;
+    font-weight:500;
+    margin-bottom:4px;
+  }
+  input[type=file]{
+    font-family:'Inter';
+    font-size:12px;
+    width:100%;
+  }
+  input[type=number], select{
+    width:100%;
+    padding:6px 8px;
+    border:1px solid var(--line);
+    border-radius:4px;
+    font-family:'IBM Plex Mono', monospace;
+    font-size:13px;
+    background:#fff;
+  }
+  input[type=range]{width:100%;}
+  .row2{display:grid; grid-template-columns:1fr 1fr; gap:8px;}
+  .checkline{display:flex; align-items:center; gap:8px; margin-bottom:12px;}
+  .checkline input{width:auto;}
+  .btn{
+    display:inline-block;
+    background:var(--teal);
+    color:#fff;
+    border:none;
+    border-radius:4px;
+    padding:7px 12px;
+    font-size:12px;
+    font-weight:600;
+    cursor:pointer;
+    font-family:'Inter';
+  }
+  .btn:hover{background:var(--teal-dark);}
+  .btn.secondary{
+    background:transparent;
+    color:var(--ink);
+    border:1px solid var(--line);
+  }
+  .btn.secondary:hover{border-color:var(--ink);}
+  .btn-row{display:flex; gap:8px; flex-wrap:wrap; margin-top:8px;}
+  .status{
+    font-family:'IBM Plex Mono', monospace;
+    font-size:11px;
+    color:var(--muted);
+    margin-top:8px;
+  }
+  .status.err{color:var(--danger);}
+
+  /* Plate */
+  .plate-wrap{overflow-x:auto;}
+  table.plate{border-collapse:collapse; user-select:none;}
+  table.plate td{
+    width:34px; height:34px;
+    text-align:center;
+    padding:0;
+  }
+  table.plate td.corner{font-family:'IBM Plex Mono'; font-size:10px; color:var(--muted);}
+  table.plate td.colhead{
+    font-family:'IBM Plex Mono'; font-size:11px; color:var(--muted); font-weight:600;
+  }
+  table.plate td.rowhead{
+    font-family:'IBM Plex Mono'; font-size:11px; color:var(--muted); font-weight:600;
+  }
+  .well{
+    width:26px; height:26px;
+    border-radius:50%;
+    margin:auto;
+    border:1px solid #B9C1B6;
+    background:var(--well-empty);
+    cursor:pointer;
+    box-shadow: inset 0 1px 2px rgba(0,0,0,0.12);
+    transition: background 60ms ease, transform 60ms ease;
+  }
+  .well.nodata{
+    cursor:not-allowed;
+    background:repeating-linear-gradient(45deg, #E4E8E2, #E4E8E2 3px, #D8DED7 3px, #D8DED7 6px);
+  }
+  .well.active{
+    background:var(--amber);
+    border-color:var(--amber-dark);
+    box-shadow: inset 0 1px 3px rgba(0,0,0,0.25), 0 0 0 2px rgba(232,163,61,0.25);
+  }
+  .well.active:hover, .well:not(.nodata):hover{transform:scale(1.08);}
+  .plate-legend{
+    display:flex; gap:16px; margin-top:12px; font-size:11px; color:var(--muted); flex-wrap:wrap;
+  }
+  .plate-legend .dot{
+    display:inline-block; width:11px; height:11px; border-radius:50%; margin-right:5px; vertical-align:-1px;
+    border:1px solid #B9C1B6;
+  }
+
+  /* Graph + table */
+  #graph{width:100%; height:520px;}
+  table.cqtable{
+    border-collapse:collapse;
+    width:100%;
+    font-family:'IBM Plex Mono', monospace;
+    font-size:12px;
+  }
+  table.cqtable th, table.cqtable td{
+    border-bottom:1px solid var(--line);
+    padding:6px 10px;
+    text-align:left;
+  }
+  table.cqtable th{
+    font-family:'Inter'; font-size:11px; text-transform:uppercase; letter-spacing:0.05em;
+    color:var(--muted); cursor:pointer;
+  }
+  table.cqtable tbody tr:hover{background:#F5F7F4;}
+  .table-scroll{max-height:360px; overflow-y:auto; border:1px solid var(--line); border-radius:4px;}
+  .empty-note{
+    color:var(--muted); font-size:13px; padding:40px 0; text-align:center;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>qPCR Plate <span>Viewer</span></h1>
+  </div>
+  <div class="sub">amplification curves &middot; threshold-adjustable Cq &middot; plate map</div>
+</header>
+
+<div class="layout">
+  <!-- LEFT COLUMN: upload, settings, plate -->
+  <div>
+    <div class="panel">
+      <h2>1. Upload data</h2>
+      <label class="field">
+        <span class="name">Amplification CSV (per-cycle RFU export)</span>
+        <input type="file" id="fileInput" accept=".csv">
+      </label>
+      <div class="status" id="uploadStatus">No file loaded.</div>
+    </div>
+
+    <div class="panel">
+      <h2>2. Settings</h2>
+      <label class="field">
+        <span class="name">RFU threshold: <span id="threshVal">200</span></span>
+        <input type="range" id="threshSlider" min="0" max="1000" value="200" step="1">
+      </label>
+      <div class="checkline">
+        <input type="checkbox" id="autoThresh">
+        <label for="autoThresh" style="font-size:12px;">Auto-suggest threshold (10&sigma; above baseline)</label>
+      </div>
+      <div class="checkline">
+        <input type="checkbox" id="baselineOn" checked>
+        <label for="baselineOn" style="font-size:12px;">Subtract baseline</label>
+      </div>
+      <div class="row2">
+        <label class="field">
+          <span class="name">Baseline start cycle</span>
+          <input type="number" id="baseStart" value="2" min="1">
+        </label>
+        <label class="field">
+          <span class="name">Baseline end cycle</span>
+          <input type="number" id="baseEnd" value="10" min="1">
+        </label>
+      </div>
+      <label class="field">
+        <span class="name">Color wells by</span>
+        <select id="colorBy">
+          <option value="row">Row</option>
+          <option value="col">Column</option>
+          <option value="none">Single color</option>
+        </select>
+      </label>
+      <div class="checkline">
+        <input type="checkbox" id="logY">
+        <label for="logY" style="font-size:12px;">Log scale (Y axis)</label>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>3. Plate map &mdash; click or drag to mark tubes present</h2>
+      <div class="plate-wrap">
+        <table class="plate" id="plateTable"></table>
+      </div>
+      <div class="plate-legend">
+        <span><span class="dot" style="background:var(--well-empty);"></span>no data in file</span>
+        <span><span class="dot" style="background:var(--well-off);"></span>data present, no tube</span>
+        <span><span class="dot" style="background:var(--amber); border-color:var(--amber-dark);"></span>tube / sample</span>
+      </div>
+      <div class="btn-row">
+        <button class="btn secondary" id="selectAllData">Select all with data</button>
+        <button class="btn secondary" id="clearAll">Clear all</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- RIGHT COLUMN: graph + table -->
+  <div>
+    <div class="panel">
+      <h2>Amplification curves</h2>
+      <div id="graph"><div class="empty-note">Upload a CSV to see curves here.</div></div>
+    </div>
+
+    <div class="panel">
+      <h2>Cq values (recomputed at current threshold)</h2>
+      <div class="btn-row" style="margin-bottom:10px;">
+        <button class="btn" id="downloadCq">Download Cq table (CSV)</button>
+      </div>
+      <div class="table-scroll">
+        <table class="cqtable" id="cqTable">
+          <thead><tr><th data-key="well">Well</th><th data-key="cq">Cq</th><th data-key="baseline">Baseline (mean RFU)</th></tr></thead>
+          <tbody><tr><td colspan="3" class="empty-note">No wells selected yet.</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  const ROWS = ["A","B","C","D","E","F","G","H"];
+  const COLS = Array.from({length:12}, (_,i)=>i+1);
+  const ALL_WELLS = [];
+  ROWS.forEach(r => COLS.forEach(c => ALL_WELLS.push(r+c)));
+
+  // ---------------- state ----------------
+  let wellData = {};      // { well: {cycles:[...], rfu:[...]} }
+  let hasData = new Set(); // wells present in uploaded file
+  let activeWells = new Set(); // wells marked as "has tube"
+  let dragMode = null;    // true = turning ON, false = turning OFF, during drag
+
+  // ---------------- column auto-detection ----------------
+  function findCol(fields, candidates){
+    const lower = fields.map(f => f.toLowerCase().trim());
+    for (const cand of candidates){
+      const idx = lower.indexOf(cand);
+      if (idx !== -1) return fields[idx];
+    }
+    for (const cand of candidates){
+      const idx = lower.findIndex(f => f.includes(cand));
+      if (idx !== -1) return fields[idx];
+    }
+    return null;
+  }
+
+  function normalizeWell(raw){
+    if (raw === null || raw === undefined) return null;
+    let s = String(raw).trim().toUpperCase();
+    const m = s.match(/^([A-H])0*(\d{1,2})$/);
+    if (!m) return null;
+    const row = m[1];
+    const col = parseInt(m[2], 10);
+    if (col < 1 || col > 12) return null;
+    return row + col;
+  }
+
+  // ---------------- CSV handling ----------------
+  const fileInput = document.getElementById('fileInput');
+  const uploadStatus = document.getElementById('uploadStatus');
+
+  fileInput.addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    uploadStatus.textContent = 'Parsing ' + file.name + '...';
+    uploadStatus.classList.remove('err');
+    Papa.parse(file, {
+      header: true,
+      dynamicTyping: false,
+      skipEmptyLines: true,
+      complete: function(results){
+        try{
+          ingestRows(results.data, results.meta.fields);
+        }catch(err){
+          uploadStatus.textContent = 'Error: ' + err.message;
+          uploadStatus.classList.add('err');
+        }
+      },
+      error: function(err){
+        uploadStatus.textContent = 'Parse error: ' + err.message;
+        uploadStatus.classList.add('err');
+      }
+    });
+  });
+
+  function ingestRows(rows, fields){
+    if (!fields || !rows.length) throw new Error('Empty file or no headers found.');
+    const wellCol = findCol(fields, ['well']);
+    const cycleCol = findCol(fields, ['cycle','step']);
+    const rfuCol = findCol(fields, ['fluorescence','rfu','fluor','value']);
+    if (!wellCol || !cycleCol || !rfuCol){
+      throw new Error('Could not find Well / Cycle / RFU columns. Found columns: ' + fields.join(', '));
+    }
+
+    wellData = {};
+    hasData = new Set();
+    let rowCount = 0;
+
+    for (const r of rows){
+      const well = normalizeWell(r[wellCol]);
+      if (!well) continue;
+      const cyc = parseFloat(r[cycleCol]);
+      const rfu = parseFloat(r[rfuCol]);
+      if (!isFinite(cyc) || !isFinite(rfu)) continue;
+      if (!wellData[well]) wellData[well] = {cycles:[], rfu:[]};
+      wellData[well].cycles.push(cyc);
+      wellData[well].rfu.push(rfu);
+      hasData.add(well);
+      rowCount++;
+    }
+
+    // sort each well by cycle
+    Object.values(wellData).forEach(w => {
+      const idx = w.cycles.map((c,i)=>i).sort((a,b)=>w.cycles[a]-w.cycles[b]);
+      w.cycles = idx.map(i=>w.cycles[i]);
+      w.rfu = idx.map(i=>w.rfu[i]);
+    });
+
+    if (hasData.size === 0) throw new Error('No valid Well/Cycle/RFU rows parsed.');
+
+    // default: everything with data starts ACTIVE (user deselects empties)
+    activeWells = new Set(hasData);
+
+    uploadStatus.textContent = rowCount + ' rows parsed \u2014 ' + hasData.size + ' wells with data.';
+    uploadStatus.classList.remove('err');
+
+    // set sensible default threshold range from data
+    const allRfu = [];
+    Object.values(wellData).forEach(w => allRfu.push(...w.rfu));
+    const maxRfu = Math.max(...allRfu);
+    const slider = document.getElementById('threshSlider');
+    slider.max = Math.ceil(maxRfu);
+    slider.value = Math.round(maxRfu * 0.15);
+    document.getElementById('threshVal').textContent = slider.value;
+
+    renderPlate();
+    updateAll();
+  }
+
+  // ---------------- plate rendering ----------------
+  const plateTable = document.getElementById('plateTable');
+
+  function renderPlate(){
+    plateTable.innerHTML = '';
+    const headRow = document.createElement('tr');
+    headRow.appendChild(makeCell('td', '', 'corner'));
+    COLS.forEach(c => headRow.appendChild(makeCell('td', c, 'colhead')));
+    plateTable.appendChild(headRow);
+
+    ROWS.forEach(r => {
+      const tr = document.createElement('tr');
+      tr.appendChild(makeCell('td', r, 'rowhead'));
+      COLS.forEach(c => {
+        const well = r + c;
+        const td = document.createElement('td');
+        const div = document.createElement('div');
+        div.className = 'well';
+        div.dataset.well = well;
+        if (!hasData.has(well)) div.classList.add('nodata');
+        if (activeWells.has(well)) div.classList.add('active');
+        attachWellEvents(div, well);
+        td.appendChild(div);
+        tr.appendChild(td);
+      });
+      plateTable.appendChild(tr);
+    });
+  }
+
+  function makeCell(tag, text, cls){
+    const el = document.createElement(tag);
+    el.className = cls;
+    el.textContent = text;
+    return el;
+  }
+
+  function attachWellEvents(div, well){
+    div.addEventListener('mousedown', (e) => {
+      if (!hasData.has(well)) return;
+      e.preventDefault();
+      dragMode = !activeWells.has(well);
+      setWellState(well, dragMode);
+    });
+    div.addEventListener('mouseenter', () => {
+      if (dragMode === null) return;
+      if (!hasData.has(well)) return;
+      setWellState(well, dragMode);
+    });
+  }
+
+  document.addEventListener('mouseup', () => {
+    if (dragMode !== null){
+      dragMode = null;
+      updateAll();
+    }
+  });
+
+  function setWellState(well, on){
+    if (on) activeWells.add(well); else activeWells.delete(well);
+    const div = plateTable.querySelector('[data-well="'+well+'"]');
+    if (div) div.classList.toggle('active', on);
+  }
+
+  document.getElementById('selectAllData').addEventListener('click', () => {
+    activeWells = new Set(hasData);
+    renderPlate();
+    updateAll();
+  });
+  document.getElementById('clearAll').addEventListener('click', () => {
+    activeWells = new Set();
+    renderPlate();
+    updateAll();
+  });
+
+  // ---------------- Cq computation ----------------
+  function computeBaseline(well){
+    const start = parseFloat(document.getElementById('baseStart').value) || 1;
+    const end = parseFloat(document.getElementById('baseEnd').value) || 10;
+    const w = wellData[well];
+    const vals = [];
+    for (let i=0;i<w.cycles.length;i++){
+      if (w.cycles[i] >= start && w.cycles[i] <= end) vals.push(w.rfu[i]);
+    }
+    if (!vals.length) return {mean:0, std:0};
+    const mean = vals.reduce((a,b)=>a+b,0) / vals.length;
+    const variance = vals.reduce((a,b)=>a+(b-mean)*(b-mean),0) / vals.length;
+    return {mean, std:Math.sqrt(variance)};
+  }
+
+  function getAdjustedCurve(well){
+    const w = wellData[well];
+    const baselineOn = document.getElementById('baselineOn').checked;
+    if (!baselineOn) return {cycles:w.cycles, rfu:w.rfu, baseline:0};
+    const {mean} = computeBaseline(well);
+    return {cycles:w.cycles, rfu:w.rfu.map(v => v - mean), baseline:mean};
+  }
+
+  function computeCq(cycles, rfu, threshold){
+    const logThresh = Math.log10(Math.max(threshold, 1e-6));
+    let idx = -1;
+    for (let i=0;i<rfu.length;i++){
+      const v = Math.log10(Math.max(rfu[i], 1e-6));
+      if (v >= logThresh){ idx = i; break; }
+    }
+    if (idx <= 0) return idx === 0 ? cycles[0] : NaN;
+    const x0 = cycles[idx-1], x1 = cycles[idx];
+    const y0 = Math.log10(Math.max(rfu[idx-1], 1e-6));
+    const y1 = Math.log10(Math.max(rfu[idx], 1e-6));
+    if (y1 === y0) return cycles[idx];
+    return x0 + (logThresh - y0) * (x1 - x0) / (y1 - y0);
+  }
+
+  // ---------------- color assignment ----------------
+  const PALETTE = ["#0F6E6A","#E8A33D","#B84C3E","#3D5A80","#7B6D8D","#5B8C5A","#C97B63","#4A6670"];
+  function colorFor(well, mode){
+    const row = well[0];
+    const col = parseInt(well.slice(1),10);
+    if (mode === 'row') return PALETTE[ROWS.indexOf(row) % PALETTE.length];
+    if (mode === 'col') return PALETTE[(col-1) % PALETTE.length];
+    return PALETTE[0];
+  }
+
+  // ---------------- main update ----------------
+  function updateAll(){
+    const active = Array.from(activeWells).sort();
+    updateThresholdLabel();
+
+    if (active.length === 0){
+      document.getElementById('graph').innerHTML = '<div class="empty-note">No wells selected. Click wells on the plate map to mark tubes present.</div>';
+      document.querySelector('#cqTable tbody').innerHTML = '<tr><td colspan="3" class="empty-note">No wells selected yet.</td></tr>';
+      return;
+    }
+
+    const threshold = parseFloat(document.getElementById('threshSlider').value);
+    const colorMode = document.getElementById('colorBy').value;
+    const logY = document.getElementById('logY').checked;
+
+    const traces = [];
+    const cqRows = [];
+
+    active.forEach(well => {
+      const {cycles, rfu, baseline} = getAdjustedCurve(well);
+      const cq = computeCq(cycles, rfu, threshold);
+      cqRows.push({well, cq, baseline});
+      traces.push({
+        x: cycles, y: rfu,
+        mode: 'lines',
+        name: well,
+        line: {color: colorFor(well, colorMode), width: 1.5},
+        hovertemplate: 'Well '+well+'<br>Cycle %{x}<br>RFU %{y:.1f}<extra></extra>'
+      });
+    });
+
+    const allCycles = active.flatMap(w => wellData[w].cycles);
+    const layout = {
+      margin: {t:10, r:20, b:45, l:55},
+      xaxis: {title:'Cycle'},
+      yaxis: {title:'RFU', type: logY ? 'log' : 'linear'},
+      shapes: [{
+        type:'line',
+        x0: Math.min(...allCycles), x1: Math.max(...allCycles),
+        y0: threshold, y1: threshold,
+        line: {color:'#B84C3E', width:2, dash:'dash'}
+      }],
+      showlegend: active.length <= 24,
+      legend: {font:{size:10}},
+      font: {family:'Inter, system-ui, sans-serif', size:12}
+    };
+
+    Plotly.react('graph', traces, layout, {responsive:true, displaylogo:false});
+
+    // Cq table
+    cqRows.sort((a,b) => a.well.localeCompare(b.well, undefined, {numeric:true}));
+    const tbody = document.querySelector('#cqTable tbody');
+    tbody.innerHTML = '';
+    cqRows.forEach(r => {
+      const tr = document.createElement('tr');
+      const cqText = isFinite(r.cq) ? r.cq.toFixed(2) : 'undetermined';
+      tr.innerHTML = '<td>'+r.well+'</td><td>'+cqText+'</td><td>'+r.baseline.toFixed(1)+'</td>';
+      tbody.appendChild(tr);
+    });
+
+    window._lastCqRows = cqRows;
+  }
+
+  function updateThresholdLabel(){
+    document.getElementById('threshVal').textContent = document.getElementById('threshSlider').value;
+  }
+
+  // ---------------- auto threshold ----------------
+  function applyAutoThreshold(){
+    const active = Array.from(activeWells);
+    if (!active.length) return;
+    let means = [], stds = [];
+    active.forEach(w => {
+      const {mean, std} = computeBaseline(w);
+      means.push(mean); stds.push(std);
+    });
+    const avgStd = stds.reduce((a,b)=>a+b,0)/stds.length;
+    const suggestion = Math.max(avgStd * 10, 20);
+    document.getElementById('threshSlider').value = Math.round(suggestion);
+    updateAll();
+  }
+
+  // ---------------- event wiring ----------------
+  ['threshSlider'].forEach(id => {
+    document.getElementById(id).addEventListener('input', updateAll);
+  });
+  ['baselineOn','logY'].forEach(id => {
+    document.getElementById(id).addEventListener('change', updateAll);
+  });
+  ['baseStart','baseEnd','colorBy'].forEach(id => {
+    document.getElementById(id).addEventListener('change', updateAll);
+  });
+  document.getElementById('autoThresh').addEventListener('change', (e) => {
+    if (e.target.checked) applyAutoThreshold();
+  });
+
+  document.getElementById('downloadCq').addEventListener('click', () => {
+    const rows = window._lastCqRows || [];
+    if (!rows.length){ alert('No Cq data to export yet.'); return; }
+    let csv = 'Well,Cq,Baseline\n';
+    rows.forEach(r => {
+      csv += r.well + ',' + (isFinite(r.cq)?r.cq.toFixed(3):'undetermined') + ',' + r.baseline.toFixed(2) + '\n';
+    });
+    const blob = new Blob([csv], {type:'text/csv'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'cq_values.csv';
+    a.click();
+    URL.revokeObjectURL(url);
+  });
+
+  // sortable table headers
+  document.querySelectorAll('#cqTable th').forEach(th => {
+    th.addEventListener('click', () => {
+      const key = th.dataset.key;
+      const rows = window._lastCqRows || [];
+      if (!rows.length) return;
+      rows.sort((a,b) => {
+        if (key === 'well') return a.well.localeCompare(b.well, undefined, {numeric:true});
+        return (a[key]||0) - (b[key]||0);
+      });
+      const tbody = document.querySelector('#cqTable tbody');
+      tbody.innerHTML = '';
+      rows.forEach(r => {
+        const tr = document.createElement('tr');
+        const cqText = isFinite(r.cq) ? r.cq.toFixed(2) : 'undetermined';
+        tr.innerHTML = '<td>'+r.well+'</td><td>'+cqText+'</td><td>'+r.baseline.toFixed(1)+'</td>';
+        tbody.appendChild(tr);
+      });
+    });
+  });
+
+  // initial render (empty plate so user sees the grid immediately)
+  hasData = new Set();
+  activeWells = new Set();
+  renderPlate();
+
+})();
+</script>
+</body>
+</html>
