@@ -373,28 +373,56 @@
 
   function ingestRows(rows, fields){
     if (!fields || !rows.length) throw new Error('Empty file or no headers found.');
-    const wellCol = findCol(fields, ['well']);
-    const cycleCol = findCol(fields, ['cycle','step']);
-    const rfuCol = findCol(fields, ['fluorescence','rfu','fluor','value']);
-    if (!wellCol || !cycleCol || !rfuCol){
-      throw new Error('Could not find Well / Cycle / RFU columns. Found columns: ' + fields.join(', '));
-    }
+
+    // CFX exports come in two shapes:
+    //  - WIDE: one row per cycle, one column per well (e.g. "A1","A2",...,"H12")
+    //    This is what "Quantification Amplification Results" CSVs actually look like.
+    //  - LONG: a "Well" column, a "Cycle" column, and an RFU column, one row per
+    //    well-cycle pair. Kept as a fallback for other export styles.
+    const wellPattern = /^[A-H]0*(?:[1-9]|1[0-2])$/i;
+    const wideWellCols = fields.filter(f => wellPattern.test(f.trim()));
 
     wellData = {};
     hasData = new Set();
     let rowCount = 0;
 
-    for (const r of rows){
-      const well = normalizeWell(r[wellCol]);
-      if (!well) continue;
-      const cyc = parseFloat(r[cycleCol]);
-      const rfu = parseFloat(r[rfuCol]);
-      if (!isFinite(cyc) || !isFinite(rfu)) continue;
-      if (!wellData[well]) wellData[well] = {cycles:[], rfu:[]};
-      wellData[well].cycles.push(cyc);
-      wellData[well].rfu.push(rfu);
-      hasData.add(well);
-      rowCount++;
+    if (wideWellCols.length >= 4){
+      const cycleCol = findCol(fields, ['cycle','step']);
+      if (!cycleCol) throw new Error('Found well columns (' + wideWellCols.length + ') but no Cycle column. Columns: ' + fields.join(', '));
+      for (const r of rows){
+        const cyc = parseFloat(r[cycleCol]);
+        if (!isFinite(cyc)) continue;
+        for (const col of wideWellCols){
+          const well = normalizeWell(col);
+          if (!well) continue;
+          const rfu = parseFloat(r[col]);
+          if (!isFinite(rfu)) continue;
+          if (!wellData[well]) wellData[well] = {cycles:[], rfu:[]};
+          wellData[well].cycles.push(cyc);
+          wellData[well].rfu.push(rfu);
+          hasData.add(well);
+          rowCount++;
+        }
+      }
+    } else {
+      const wellCol = findCol(fields, ['well']);
+      const cycleCol = findCol(fields, ['cycle','step']);
+      const rfuCol = findCol(fields, ['fluorescence','rfu','fluor','value']);
+      if (!wellCol || !cycleCol || !rfuCol){
+        throw new Error('Could not find Well / Cycle / RFU columns. Found columns: ' + fields.join(', '));
+      }
+      for (const r of rows){
+        const well = normalizeWell(r[wellCol]);
+        if (!well) continue;
+        const cyc = parseFloat(r[cycleCol]);
+        const rfu = parseFloat(r[rfuCol]);
+        if (!isFinite(cyc) || !isFinite(rfu)) continue;
+        if (!wellData[well]) wellData[well] = {cycles:[], rfu:[]};
+        wellData[well].cycles.push(cyc);
+        wellData[well].rfu.push(rfu);
+        hasData.add(well);
+        rowCount++;
+      }
     }
 
     // sort each well by cycle
