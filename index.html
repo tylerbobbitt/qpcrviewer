@@ -350,7 +350,7 @@
   let hasData = new Set(); // wells present in uploaded file
   let activeWells = new Set(); // wells marked as "has tube"
   let dragMode = null;    // true = turning ON, false = turning OFF, during drag
-  let highlightedWell = null; // well currently highlighted from a Cq table click
+  let highlightedWells = new Set(); // wells highlighted from Cq table clicks (empty = normal view)
   let wellTraceIndex = {};    // well -> index of its trace in the current graph
 
   // ---------------- column auto-detection ----------------
@@ -408,7 +408,7 @@
 
   function ingestRows(rows, fields){
     if (!fields || !rows.length) throw new Error('Empty file or no headers found.');
-    highlightedWell = null;
+    highlightedWells = new Set();
 
     // CFX exports come in two shapes:
     //  - WIDE: one row per cycle, one column per well (e.g. "A1","A2",...,"H12")
@@ -693,8 +693,9 @@
     const colorMode = document.getElementById('colorBy').value;
     const logY = document.getElementById('logY').checked;
 
-    // if the previously highlighted well got deselected, drop the highlight
-    if (highlightedWell && !active.includes(highlightedWell)) highlightedWell = null;
+    // drop any highlighted wells that are no longer active/displayed
+    highlightedWells.forEach(w => { if (!active.includes(w)) highlightedWells.delete(w); });
+    const anyHighlight = highlightedWells.size > 0;
 
     const traces = [];
     const cqRows = [];
@@ -712,8 +713,8 @@
       midRows.push({well, midpoint: isFinite(cq) ? midCycle : NaN, maxRfu});
 
       wellTraceIndex[well] = i;
-      const isHighlighted = highlightedWell === well;
-      const isDimmed = highlightedWell !== null && !isHighlighted;
+      const isHighlighted = highlightedWells.has(well);
+      const isDimmed = anyHighlight && !isHighlighted;
       traces.push({
         x: cycles, y: rfu,
         mode: 'lines',
@@ -771,28 +772,35 @@
     const cqText = isFinite(r.cq) ? r.cq.toFixed(2) : 'undetermined';
     tr.innerHTML = '<td>'+r.well+'</td><td>'+cqText+'</td><td>'+r.baseline.toFixed(1)+'</td>';
     tr.dataset.well = r.well;
-    tr.classList.toggle('selected-row', r.well === highlightedWell);
+    tr.classList.toggle('selected-row', highlightedWells.has(r.well));
     tr.addEventListener('click', () => toggleHighlight(r.well));
     return tr;
   }
 
+  // Click a row to add/remove its well from the highlighted set. When the set
+  // is empty, the graph returns to its normal all-curves-equal view.
   function toggleHighlight(well){
-    highlightedWell = (highlightedWell === well) ? null : well;
+    if (highlightedWells.has(well)) highlightedWells.delete(well);
+    else highlightedWells.add(well);
     applyHighlight();
   }
 
   // Re-styles the graph in place (via Plotly.restyle, no full redraw so pan/
-  // zoom state is preserved) and updates which Cq table row looks selected.
+  // zoom state is preserved) and updates which Cq table rows look selected.
   function applyHighlight(){
+    const anyHighlight = highlightedWells.size > 0;
     document.querySelectorAll('#cqTable tbody tr').forEach(tr => {
-      tr.classList.toggle('selected-row', tr.dataset.well === highlightedWell);
+      tr.classList.toggle('selected-row', highlightedWells.has(tr.dataset.well));
     });
 
     const wells = Object.keys(wellTraceIndex);
     if (!wells.length) return;
     const indices = wells.map(w => wellTraceIndex[w]);
-    const opacities = wells.map(w => highlightedWell ? (w === highlightedWell ? 1 : 0.12) : 0.85);
-    const widths = wells.map(w => (highlightedWell && w === highlightedWell) ? 3.5 : 1.5);
+    const opacities = wells.map(w => {
+      if (!anyHighlight) return 0.85;
+      return highlightedWells.has(w) ? 1 : 0.12;
+    });
+    const widths = wells.map(w => (anyHighlight && highlightedWells.has(w)) ? 3.5 : 1.5);
     Plotly.restyle('graph', {opacity: opacities, 'line.width': widths}, indices);
   }
 
