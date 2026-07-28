@@ -206,6 +206,12 @@
     color:var(--muted); cursor:pointer;
   }
   table.cqtable tbody tr:hover{background:#F5F7F4;}
+  table.cqtable tbody tr{cursor:pointer;}
+  table.cqtable tbody tr.selected-row{
+    background:rgba(232,163,61,0.22) !important;
+    box-shadow: inset 3px 0 0 var(--amber-dark);
+    font-weight:600;
+  }
   .table-scroll{max-height:360px; overflow-y:auto; border:1px solid var(--line); border-radius:4px;}
   .empty-note{
     color:var(--muted); font-size:13px; padding:40px 0; text-align:center;
@@ -236,15 +242,18 @@
     <div class="panel">
       <h2>2. Settings</h2>
       <label class="field">
-        <span class="name">RFU threshold: <span id="threshVal">200</span></span>
-        <input type="range" id="threshSlider" min="0" max="1000" value="200" step="1">
+        <span class="name">RFU threshold</span>
+        <div style="display:grid; grid-template-columns:1fr 90px; gap:8px; align-items:center;">
+          <input type="range" id="threshSlider" min="0" max="5000" value="2605" step="1">
+          <input type="number" id="threshNumber" min="0" step="1" value="2605">
+        </div>
       </label>
       <div class="checkline">
         <input type="checkbox" id="autoThresh">
         <label for="autoThresh" style="font-size:12px;">Auto-suggest threshold (10&sigma; above baseline)</label>
       </div>
       <div class="checkline">
-        <input type="checkbox" id="baselineOn" checked>
+        <input type="checkbox" id="baselineOn">
         <label for="baselineOn" style="font-size:12px;">Subtract baseline</label>
       </div>
       <div class="row2">
@@ -341,6 +350,8 @@
   let hasData = new Set(); // wells present in uploaded file
   let activeWells = new Set(); // wells marked as "has tube"
   let dragMode = null;    // true = turning ON, false = turning OFF, during drag
+  let highlightedWell = null; // well currently highlighted from a Cq table click
+  let wellTraceIndex = {};    // well -> index of its trace in the current graph
 
   // ---------------- column auto-detection ----------------
   function findCol(fields, candidates){
@@ -397,6 +408,7 @@
 
   function ingestRows(rows, fields){
     if (!fields || !rows.length) throw new Error('Empty file or no headers found.');
+    highlightedWell = null;
 
     // CFX exports come in two shapes:
     //  - WIDE: one row per cycle, one column per well (e.g. "A1","A2",...,"H12")
@@ -458,19 +470,22 @@
 
     if (hasData.size === 0) throw new Error('No valid Well/Cycle/RFU rows parsed.');
 
-    // set the threshold slider's range from the data first
+    // extend the slider's range to comfortably cover this dataset, without
+    // ever shrinking below the current threshold value (so a fixed default
+    // like 2605 never gets silently clamped by a smaller-range dataset)
     const allRfu = [];
     Object.values(wellData).forEach(w => allRfu.push(...w.rfu));
     const maxRfu = Math.max(...allRfu);
     const slider = document.getElementById('threshSlider');
-    slider.max = Math.ceil(maxRfu);
+    slider.max = Math.max(parseFloat(slider.value) || 0, Math.ceil(maxRfu * 1.2));
 
     // auto-detect which wells actually show amplification and pre-select only
-    // those (sets activeWells + a sensible threshold based on baseline noise)
+    // those, using whatever threshold is currently set (or a noise-based
+    // suggestion if "Auto-suggest threshold" is checked)
     autoSelectSignalWells();
 
     uploadStatus.textContent = rowCount + ' rows parsed \u2014 ' + hasData.size + ' wells with data, '
-      + activeWells.size + ' auto-selected as showing signal (threshold ' + slider.value + ' RFU). '
+      + activeWells.size + ' auto-selected as showing signal (threshold ' + getThreshold() + ' RFU). '
       + 'Adjust the plate map or threshold if this needs correcting.';
     uploadStatus.classList.remove('err');
 
@@ -478,22 +493,38 @@
     updateAll();
   }
 
-  // Runs right after a file is parsed: estimates a threshold from baseline
-  // noise across all wells, then keeps only wells whose curve actually
-  // crosses it active. Wells that never rise above noise (no tube / no
-  // amplification) start deselected so the user doesn't have to click them
-  // off one by one.
+  // Reads/writes the threshold from the number input (source of truth for
+  // exact value) and keeps the slider + number input in sync.
+  function getThreshold(){
+    return parseFloat(document.getElementById('threshNumber').value) || 0;
+  }
+  function setThresholdValue(v){
+    const val = Math.round(v * 100) / 100;
+    const slider = document.getElementById('threshSlider');
+    const number = document.getElementById('threshNumber');
+    if (val > parseFloat(slider.max)) slider.max = Math.ceil(val * 1.1);
+    slider.value = val;
+    number.value = val;
+  }
+
+  // Runs right after a file is parsed: by default uses whatever threshold is
+  // currently set (2605 unless the user changed it) to decide which wells
+  // show real amplification vs. noise, and keeps only those active. If
+  // "Auto-suggest threshold" is checked, it instead estimates a threshold
+  // from baseline noise across all wells first.
   function autoSelectSignalWells(){
     const wells = Array.from(hasData);
     if (!wells.length) return;
 
-    const stds = wells.map(w => computeBaseline(w).std);
-    const avgStd = stds.reduce((a,b)=>a+b,0) / stds.length;
-    const threshold = Math.max(avgStd * 10, 20);
-
-    const slider = document.getElementById('threshSlider');
-    slider.value = Math.round(threshold);
-    document.getElementById('threshVal').textContent = slider.value;
+    let threshold;
+    if (document.getElementById('autoThresh').checked){
+      const stds = wells.map(w => computeBaseline(w).std);
+      const avgStd = stds.reduce((a,b)=>a+b,0) / stds.length;
+      threshold = Math.max(avgStd * 10, 20);
+      setThresholdValue(threshold);
+    } else {
+      threshold = getThreshold();
+    }
 
     const signalWells = new Set();
     wells.forEach(w => {
@@ -650,7 +681,6 @@
   // ---------------- main update ----------------
   function updateAll(){
     const active = Array.from(activeWells).sort();
-    updateThresholdLabel();
 
     if (active.length === 0){
       document.getElementById('graph').innerHTML = '<div class="empty-note">No wells selected. Click wells on the plate map to mark tubes present.</div>';
@@ -659,15 +689,19 @@
       return;
     }
 
-    const threshold = parseFloat(document.getElementById('threshSlider').value);
+    const threshold = getThreshold();
     const colorMode = document.getElementById('colorBy').value;
     const logY = document.getElementById('logY').checked;
+
+    // if the previously highlighted well got deselected, drop the highlight
+    if (highlightedWell && !active.includes(highlightedWell)) highlightedWell = null;
 
     const traces = [];
     const cqRows = [];
     const midRows = [];
+    wellTraceIndex = {};
 
-    active.forEach(well => {
+    active.forEach((well, i) => {
       const {cycles, rfu, baseline} = getAdjustedCurve(well);
       const cq = computeCq(cycles, rfu, threshold);
       cqRows.push({well, cq, baseline});
@@ -677,11 +711,15 @@
       const {cycle: midCycle, maxRfu} = computeMidpoint(cycles, rfu);
       midRows.push({well, midpoint: isFinite(cq) ? midCycle : NaN, maxRfu});
 
+      wellTraceIndex[well] = i;
+      const isHighlighted = highlightedWell === well;
+      const isDimmed = highlightedWell !== null && !isHighlighted;
       traces.push({
         x: cycles, y: rfu,
         mode: 'lines',
         name: well,
-        line: {color: colorFor(well, colorMode), width: 1.5},
+        line: {color: colorFor(well, colorMode), width: isHighlighted ? 3.5 : 1.5},
+        opacity: isDimmed ? 0.12 : (isHighlighted ? 1 : 0.85),
         hovertemplate: 'Well '+well+'<br>Cycle %{x}<br>RFU %{y:.1f}<extra></extra>'
       });
     });
@@ -708,12 +746,7 @@
     cqRows.sort((a,b) => a.well.localeCompare(b.well, undefined, {numeric:true}));
     const tbody = document.querySelector('#cqTable tbody');
     tbody.innerHTML = '';
-    cqRows.forEach(r => {
-      const tr = document.createElement('tr');
-      const cqText = isFinite(r.cq) ? r.cq.toFixed(2) : 'undetermined';
-      tr.innerHTML = '<td>'+r.well+'</td><td>'+cqText+'</td><td>'+r.baseline.toFixed(1)+'</td>';
-      tbody.appendChild(tr);
-    });
+    cqRows.forEach(r => tbody.appendChild(makeCqRow(r)));
 
     window._lastCqRows = cqRows;
 
@@ -731,28 +764,66 @@
     window._lastMidRows = midRows;
   }
 
-  function updateThresholdLabel(){
-    document.getElementById('threshVal').textContent = document.getElementById('threshSlider').value;
+  // Builds one <tr> for the Cq table, wired to click-to-highlight the
+  // corresponding curve in the graph above.
+  function makeCqRow(r){
+    const tr = document.createElement('tr');
+    const cqText = isFinite(r.cq) ? r.cq.toFixed(2) : 'undetermined';
+    tr.innerHTML = '<td>'+r.well+'</td><td>'+cqText+'</td><td>'+r.baseline.toFixed(1)+'</td>';
+    tr.dataset.well = r.well;
+    tr.classList.toggle('selected-row', r.well === highlightedWell);
+    tr.addEventListener('click', () => toggleHighlight(r.well));
+    return tr;
+  }
+
+  function toggleHighlight(well){
+    highlightedWell = (highlightedWell === well) ? null : well;
+    applyHighlight();
+  }
+
+  // Re-styles the graph in place (via Plotly.restyle, no full redraw so pan/
+  // zoom state is preserved) and updates which Cq table row looks selected.
+  function applyHighlight(){
+    document.querySelectorAll('#cqTable tbody tr').forEach(tr => {
+      tr.classList.toggle('selected-row', tr.dataset.well === highlightedWell);
+    });
+
+    const wells = Object.keys(wellTraceIndex);
+    if (!wells.length) return;
+    const indices = wells.map(w => wellTraceIndex[w]);
+    const opacities = wells.map(w => highlightedWell ? (w === highlightedWell ? 1 : 0.12) : 0.85);
+    const widths = wells.map(w => (highlightedWell && w === highlightedWell) ? 3.5 : 1.5);
+    Plotly.restyle('graph', {opacity: opacities, 'line.width': widths}, indices);
   }
 
   // ---------------- auto threshold ----------------
   function applyAutoThreshold(){
     const active = Array.from(activeWells);
     if (!active.length) return;
-    let means = [], stds = [];
+    let stds = [];
     active.forEach(w => {
-      const {mean, std} = computeBaseline(w);
-      means.push(mean); stds.push(std);
+      const {std} = computeBaseline(w);
+      stds.push(std);
     });
     const avgStd = stds.reduce((a,b)=>a+b,0)/stds.length;
     const suggestion = Math.max(avgStd * 10, 20);
-    document.getElementById('threshSlider').value = Math.round(suggestion);
+    setThresholdValue(suggestion);
     updateAll();
   }
 
   // ---------------- event wiring ----------------
-  ['threshSlider'].forEach(id => {
-    document.getElementById(id).addEventListener('input', updateAll);
+  document.getElementById('threshSlider').addEventListener('input', () => {
+    document.getElementById('threshNumber').value = document.getElementById('threshSlider').value;
+    updateAll();
+  });
+  document.getElementById('threshNumber').addEventListener('input', () => {
+    const v = parseFloat(document.getElementById('threshNumber').value);
+    if (!isFinite(v)) return;
+    const slider = document.getElementById('threshSlider');
+    if (v > parseFloat(slider.max)) slider.max = Math.ceil(v * 1.1);
+    if (v < parseFloat(slider.min)) slider.min = Math.floor(v);
+    slider.value = v;
+    updateAll();
   });
   ['baselineOn','logY'].forEach(id => {
     document.getElementById(id).addEventListener('change', updateAll);
@@ -806,12 +877,7 @@
       });
       const tbody = document.querySelector('#cqTable tbody');
       tbody.innerHTML = '';
-      rows.forEach(r => {
-        const tr = document.createElement('tr');
-        const cqText = isFinite(r.cq) ? r.cq.toFixed(2) : 'undetermined';
-        tr.innerHTML = '<td>'+r.well+'</td><td>'+cqText+'</td><td>'+r.baseline.toFixed(1)+'</td>';
-        tbody.appendChild(tr);
-      });
+      rows.forEach(r => tbody.appendChild(makeCqRow(r)));
     });
   });
 
