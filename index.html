@@ -85,14 +85,13 @@
     padding:2px 0;
   }
   .plate-summary-cell{
-    aspect-ratio:1.15/1;
+    min-height:44px;
     border-radius:6px;
     border:1px solid var(--line);
     display:flex; flex-direction:column; align-items:center; justify-content:center;
     font-family:'IBM Plex Mono', monospace;
     text-align:center;
-    overflow:hidden;
-    padding:2px;
+    padding:4px 3px;
     min-width:0;
   }
   .plate-summary-cell.empty{
@@ -106,8 +105,11 @@
     font-size:12px; font-weight:700; line-height:1.2; color:var(--ink);
   }
   .plate-summary-cell .sample-label{
-    font-size:7.5px; line-height:1.1; color:var(--ink);
-    max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+    font-size:8px; line-height:1.25; color:var(--ink);
+    max-width:100%;
+    white-space:normal;
+    word-break:break-word;
+    overflow-wrap:break-word;
   }
 
   .panel{
@@ -262,7 +264,26 @@
     box-shadow: inset 3px 0 0 var(--amber-dark);
     font-weight:600;
   }
-  .table-scroll{max-height:360px; overflow-y:auto; border:1px solid var(--line); border-radius:4px;}
+  .sample-id-cell{
+    display:flex;
+    align-items:center;
+    gap:2px;
+  }
+  .sample-id-cell .label-slot{
+    display:inline-block;
+    width:90px;
+    min-width:90px;
+    max-width:90px;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+    text-align:left;
+  }
+  .sample-id-cell .label-sep{
+    color:var(--muted);
+    flex-shrink:0;
+  }
+  .table-scroll{max-height:360px; overflow-y:auto; overflow-x:auto; border:1px solid var(--line); border-radius:4px;}
   .empty-note{
     color:var(--muted); font-size:13px; padding:40px 0; text-align:center;
   }
@@ -477,6 +498,22 @@
   function setLabelSlot(well, slotIndex, text){
     if (!wellLabels[well]) wellLabels[well] = ['', '', ''];
     wellLabels[well][slotIndex] = text;
+  }
+
+  // Renders a well's 3 label slots as fixed-width columns separated by "|",
+  // so the pipes and each label slot line up vertically across every row in
+  // the Cq table -- makes it easy to compare, say, all the "tether length"
+  // values (slot 2) by eye straight down the column.
+  function labelSlotsHtml(well){
+    const arr = wellLabels[well] || ['', '', ''];
+    const esc = s => escapeHtml(s || '');
+    return '<div class="sample-id-cell">' +
+      '<span class="label-slot" title="' + esc(arr[0]) + '">' + esc(arr[0]) + '</span>' +
+      '<span class="label-sep">|</span>' +
+      '<span class="label-slot" title="' + esc(arr[1]) + '">' + esc(arr[1]) + '</span>' +
+      '<span class="label-sep">|</span>' +
+      '<span class="label-slot" title="' + esc(arr[2]) + '">' + esc(arr[2]) + '</span>' +
+      '</div>';
   }
 
   // ---------------- column auto-detection ----------------
@@ -762,6 +799,8 @@
     if (!labelSelection.size){ alert('Click or drag-select wells on the plate first.'); return; }
     const label = document.getElementById('groupLabelInput').value.trim();
     labelSelection.forEach(w => setLabelSlot(w, slotIndex, label));
+    labelSelection.clear();
+    document.getElementById('labelSelCount').textContent = '0 wells selected. Click or drag on the plate below.';
     renderPlate();
     updateAll();
   }
@@ -857,7 +896,7 @@
         const cell = document.createElement('div');
         cell.className = 'plate-summary-cell';
         const cq = wellCqLookup[well];
-        const label = combinedLabel(well);
+        const labelParts = (wellLabels[well] || []).filter(l => l && l.trim() !== '');
 
         if (!activeWells.has(well) || !isFinite(cq)){
           cell.classList.add('empty');
@@ -865,7 +904,11 @@
         } else {
           cell.style.backgroundColor = cqColorScale(cq, cqColorMin, cqColorMedian, cqColorMax) || '';
           let html = '<span class="well-id">' + well + '</span><span class="cq-val">' + cq.toFixed(2) + '</span>';
-          if (label) html += '<span class="sample-label" title="' + escapeHtml(label) + '">' + escapeHtml(label) + '</span>';
+          if (labelParts.length){
+            const titleText = labelParts.join(' | ');
+            html += '<span class="sample-label" title="' + escapeHtml(titleText) + '">' +
+              labelParts.map(escapeHtml).join('<br>') + '</span>';
+          }
           cell.innerHTML = html;
         }
         grid.appendChild(cell);
@@ -1099,8 +1142,7 @@
     const cqStyle = cqColor ? ' style="background-color:'+cqColor+';"' : '';
     let html = '<td>'+r.well+'</td><td'+cqStyle+'>'+cqText+'</td>';
     if (showSampleIdColumn){
-      const sampleId = hasAnyLabel(r.well) ? escapeHtml(combinedLabel(r.well)) : '\u2014';
-      html += '<td>'+sampleId+'</td>';
+      html += '<td>'+labelSlotsHtml(r.well)+'</td>';
     }
     tr.innerHTML = html;
     tr.dataset.well = r.well;
