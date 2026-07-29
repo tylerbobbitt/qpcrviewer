@@ -339,6 +339,8 @@
           <option value="label1">Label 1</option>
           <option value="label2">Label 2</option>
           <option value="label3">Label 3</option>
+          <option value="label4">Label 4</option>
+          <option value="label5">Label 5</option>
         </select>
       </label>
       <div class="checkline">
@@ -363,6 +365,8 @@
           <button class="btn" id="applyLabel1">Label 1</button>
           <button class="btn" id="applyLabel2">Label 2</button>
           <button class="btn" id="applyLabel3">Label 3</button>
+          <button class="btn" id="applyLabel4">Label 4</button>
+          <button class="btn" id="applyLabel5">Label 5</button>
         </div>
         <div class="btn-row">
           <button class="btn secondary" id="clearLabelsForSelection">Erase labels for selected</button>
@@ -422,6 +426,10 @@
             <th data-key="label2" class="sample-id-th">Label 2</th>
             <th class="pipe-col-th sample-id-th">&nbsp;</th>
             <th data-key="label3" class="sample-id-th">Label 3</th>
+            <th class="pipe-col-th sample-id-th">&nbsp;</th>
+            <th data-key="label4" class="sample-id-th">Label 4</th>
+            <th class="pipe-col-th sample-id-th">&nbsp;</th>
+            <th data-key="label5" class="sample-id-th">Label 5</th>
           </tr></thead>
           <tbody><tr><td colspan="3" class="empty-note">No wells selected yet.</td></tr></tbody>
         </table>
@@ -477,6 +485,15 @@
   const ALL_WELLS = [];
   ROWS.forEach(r => COLS.forEach(c => ALL_WELLS.push(r+c)));
 
+  const NUM_LABEL_SLOTS = 5;
+  const LABEL_SLOT_KEYS = Array.from({length:NUM_LABEL_SLOTS}, (_,i) => 'label'+(i+1));   // ['label1',...,'label5']
+  const LABEL_SLOT_NAMES = Array.from({length:NUM_LABEL_SLOTS}, (_,i) => 'Label '+(i+1)); // ['Label 1',...,'Label 5']
+  function emptyLabelArray(){ return new Array(NUM_LABEL_SLOTS).fill(''); }
+  function labelModeToIndex(mode){
+    const idx = LABEL_SLOT_KEYS.indexOf(mode);
+    return idx === -1 ? undefined : idx;
+  }
+
   // ---------------- state ----------------
   let wellData = {};      // { well: {cycles:[...], rfu:[...]} }
   let hasData = new Set(); // wells present in uploaded file
@@ -484,14 +501,14 @@
   let dragMode = null;    // true = turning ON, false = turning OFF, during drag
   let highlightedWells = new Set(); // wells highlighted from Cq table clicks (empty = normal view)
   let wellTraceIndex = {};    // well -> index of its trace in the current graph
-  let wellLabels = {};        // well -> [label1, label2, label3] (up to 3 slots, any may be empty)
+  let wellLabels = {};        // well -> [label1..label5] (up to 5 slots, any may be empty)
   let showSampleIdColumn = false; // whether the Cq table's Sample ID column is currently shown
   let labelSelection = new Set(); // transient plate selection while in "Label groups" mode
   let plateMode = 'mark';     // 'mark' (toggle tube present) or 'label' (select wells to label)
   let wellCqLookup = {};      // well -> current computed Cq (for plate heatmap)
   let cqColorMin = 0, cqColorMax = 0, cqColorMedian = 0; // current Cq range, shared by table + plate heatmap colors
 
-  // ---------------- label helpers (up to 3 slots per well) ----------------
+  // ---------------- label helpers (up to NUM_LABEL_SLOTS slots per well) ----------------
   function hasAnyLabel(well){
     const arr = wellLabels[well];
     return !!(arr && arr.some(l => l && l.trim() !== ''));
@@ -502,23 +519,24 @@
     return arr.filter(l => l && l.trim() !== '').join(' | ');
   }
   function setLabelSlot(well, slotIndex, text){
-    if (!wellLabels[well]) wellLabels[well] = ['', '', ''];
+    if (!wellLabels[well]) wellLabels[well] = emptyLabelArray();
     wellLabels[well][slotIndex] = text;
   }
 
-  // Renders a well's 3 label slots as real <td> cells (with thin "|" separator
+  // Renders a well's label slots as real <td> cells (with thin "|" separator
   // cells between them). Because these are genuine table columns, the browser
   // auto-sizes each one to the widest content across ALL rows -- so every
   // label is shown in full (no truncation) while the "|" separators and each
   // label column still land in the same horizontal position on every row.
   function labelSlotsHtml(well){
-    const arr = wellLabels[well] || ['', '', ''];
+    const arr = wellLabels[well] || emptyLabelArray();
     const esc = s => escapeHtml(s || '');
-    return '<td class="label-col">' + esc(arr[0]) + '</td>' +
-      '<td class="pipe-col">|</td>' +
-      '<td class="label-col">' + esc(arr[1]) + '</td>' +
-      '<td class="pipe-col">|</td>' +
-      '<td class="label-col">' + esc(arr[2]) + '</td>';
+    let html = '';
+    for (let i = 0; i < NUM_LABEL_SLOTS; i++){
+      if (i > 0) html += '<td class="pipe-col">|</td>';
+      html += '<td class="label-col">' + esc(arr[i]) + '</td>';
+    }
+    return html;
   }
 
   // ---------------- column auto-detection ----------------
@@ -611,10 +629,10 @@
           sessRows.forEach(row => {
             const well = String(row['Well'] || '').trim();
             if (!well) return;
-            const l1 = String(row['Label 1'] || '');
-            const l2 = String(row['Label 2'] || '');
-            const l3 = String(row['Label 3'] || '');
-            if (l1 || l2 || l3) wellLabels[well] = [l1, l2, l3];
+            // Reads whichever "Label N" columns exist in the file -- older
+            // exports (3 slots) and current ones (5 slots) both work.
+            const labels = LABEL_SLOT_NAMES.map(name => String(row[name] || ''));
+            if (labels.some(l => l)) wellLabels[well] = labels;
             const activeVal = row['Active'];
             if (activeVal === true || activeVal === 'TRUE' || activeVal === 'true' || activeVal === 1) restoredActive.add(well);
           });
@@ -891,6 +909,8 @@
   document.getElementById('applyLabel1').addEventListener('click', () => applyLabelToSlot(0));
   document.getElementById('applyLabel2').addEventListener('click', () => applyLabelToSlot(1));
   document.getElementById('applyLabel3').addEventListener('click', () => applyLabelToSlot(2));
+  document.getElementById('applyLabel4').addEventListener('click', () => applyLabelToSlot(3));
+  document.getElementById('applyLabel5').addEventListener('click', () => applyLabelToSlot(4));
 
   document.getElementById('clearLabelsForSelection').addEventListener('click', () => {
     if (!labelSelection.size){ alert('Click or drag-select wells first.'); return; }
@@ -1101,9 +1121,9 @@
     const col = parseInt(well.slice(1),10);
     if (mode === 'row') return PALETTE[ROWS.indexOf(row) % PALETTE.length];
     if (mode === 'col') return PALETTE[(col-1) % PALETTE.length];
-    const labelSlotIdx = {label1:0, label2:1, label3:2}[mode];
+    const labelSlotIdx = labelModeToIndex(mode);
     if (labelSlotIdx !== undefined){
-      const val = (wellLabels[well] || ['','',''])[labelSlotIdx] || '';
+      const val = (wellLabels[well] || emptyLabelArray())[labelSlotIdx] || '';
       if (!val) return '#B9C1B6'; // neutral grey: this well has no label in that slot
       return labelColorMap.get(val) || PALETTE[0];
     }
@@ -1142,10 +1162,10 @@
     // When coloring by a label slot, build a stable value->color mapping
     // (sorted alphabetically so the same label always gets the same color
     // across re-renders, not just whatever order wells happen to iterate in)
-    const labelSlotIdx = {label1:0, label2:1, label3:2}[colorMode];
+    const labelSlotIdx = labelModeToIndex(colorMode);
     if (labelSlotIdx !== undefined){
       const uniqueVals = Array.from(new Set(
-        active.map(w => (wellLabels[w] || ['','',''])[labelSlotIdx] || '').filter(v => v)
+        active.map(w => (wellLabels[w] || emptyLabelArray())[labelSlotIdx] || '').filter(v => v)
       )).sort();
       labelColorMap = new Map(uniqueVals.map((v, i) => [v, PALETTE[i % PALETTE.length]]));
     } else {
@@ -1176,7 +1196,7 @@
       wellTraceIndex[well] = i;
       const isHighlighted = highlightedWells.has(well);
       const isDimmed = anyHighlight && !isHighlighted;
-      const groupVal = labelSlotIdx !== undefined ? ((wellLabels[well] || ['','',''])[labelSlotIdx] || '(unlabeled)') : null;
+      const groupVal = labelSlotIdx !== undefined ? ((wellLabels[well] || emptyLabelArray())[labelSlotIdx] || '(unlabeled)') : null;
       const traceName = groupVal !== null ? well + ' \u2014 ' + groupVal : well;
       const hoverExtra = groupVal !== null ? ('<br>' + escapeHtml(groupVal)) : '';
       traces.push({
@@ -1335,14 +1355,15 @@
   document.getElementById('downloadCq').addEventListener('click', () => {
     const rows = window._lastCqRows || [];
     if (!rows.length){ alert('No Cq data to export yet.'); return; }
-    let csv = 'Well,Cq,Label 1,Label 2,Label 3\n';
+    let csv = 'Well,Cq,' + LABEL_SLOT_NAMES.join(',') + '\n';
     rows.forEach(r => {
-      const labels = wellLabels[r.well] || ['', '', ''];
+      const labels = wellLabels[r.well] || emptyLabelArray();
       const esc = s => s.replace(/"/g, '""');
-      csv += r.well + ',' + (isFinite(r.cq)?r.cq.toFixed(3):'undetermined')
-        + ',"' + esc(labels[0]) + '"'
-        + ',"' + esc(labels[1]) + '"'
-        + ',"' + esc(labels[2]) + '"\n';
+      csv += r.well + ',' + (isFinite(r.cq)?r.cq.toFixed(3):'undetermined');
+      for (let i = 0; i < NUM_LABEL_SLOTS; i++){
+        csv += ',"' + esc(labels[i] || '') + '"';
+      }
+      csv += '\n';
     });
     const blob = new Blob([csv], {type:'text/csv'});
     const url = URL.createObjectURL(blob);
@@ -1383,15 +1404,14 @@
 
     const wb = XLSX.utils.book_new();
 
-    // Sheet 1: Cq values (labels split into 3 columns, matching the label-slot system)
-    const cqAoa = [['Well', 'Cq', 'Label 1', 'Label 2', 'Label 3']];
+    // Sheet 1: Cq values (labels split into separate columns, matching the label-slot system)
+    const cqAoa = [['Well', 'Cq'].concat(LABEL_SLOT_NAMES)];
     cqRows.forEach(r => {
-      const labels = wellLabels[r.well] || ['', '', ''];
+      const labels = wellLabels[r.well] || emptyLabelArray();
       cqAoa.push([
         r.well,
-        isFinite(r.cq) ? Number(r.cq.toFixed(3)) : 'undetermined',
-        labels[0] || '', labels[1] || '', labels[2] || ''
-      ]);
+        isFinite(r.cq) ? Number(r.cq.toFixed(3)) : 'undetermined'
+      ].concat(labels.map(l => l || '')));
     });
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(cqAoa), 'Cq Values');
 
@@ -1415,10 +1435,10 @@
 
     // Sheet 4: Session Data -- machine-readable, every well with data (active or
     // not), used to restore the exact plate selection + labels on re-upload.
-    const sessionAoa = [['Well', 'Active', 'Label 1', 'Label 2', 'Label 3']];
+    const sessionAoa = [['Well', 'Active'].concat(LABEL_SLOT_NAMES)];
     Array.from(hasData).sort().forEach(w => {
-      const labels = wellLabels[w] || ['', '', ''];
-      sessionAoa.push([w, activeWells.has(w) ? 'TRUE' : 'FALSE', labels[0] || '', labels[1] || '', labels[2] || '']);
+      const labels = wellLabels[w] || emptyLabelArray();
+      sessionAoa.push([w, activeWells.has(w) ? 'TRUE' : 'FALSE'].concat(labels.map(l => l || '')));
     });
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(sessionAoa), 'Session Data');
 
@@ -1464,10 +1484,10 @@
       if (!rows.length) return;
       rows.sort((a,b) => {
         if (key === 'well') return a.well.localeCompare(b.well, undefined, {numeric:true});
-        if (key === 'label1' || key === 'label2' || key === 'label3'){
-          const idx = {label1:0, label2:1, label3:2}[key];
-          const av = (wellLabels[a.well] || ['','',''])[idx] || '';
-          const bv = (wellLabels[b.well] || ['','',''])[idx] || '';
+        const idx = labelModeToIndex(key);
+        if (idx !== undefined){
+          const av = (wellLabels[a.well] || emptyLabelArray())[idx] || '';
+          const bv = (wellLabels[b.well] || emptyLabelArray())[idx] || '';
           return av.localeCompare(bv);
         }
         return (a[key]||0) - (b[key]||0);
