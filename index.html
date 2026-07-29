@@ -336,6 +336,9 @@
           <option value="row">Row</option>
           <option value="col">Column</option>
           <option value="none">Single color</option>
+          <option value="label1">Label 1</option>
+          <option value="label2">Label 2</option>
+          <option value="label3">Label 3</option>
         </select>
       </label>
       <div class="checkline">
@@ -1091,11 +1094,19 @@
 
   // ---------------- color assignment ----------------
   const PALETTE = ["#0F6E6A","#E8A33D","#B84C3E","#3D5A80","#7B6D8D","#5B8C5A","#C97B63","#4A6670"];
+  let labelColorMap = new Map(); // label value -> color, when coloring by a label slot
+
   function colorFor(well, mode){
     const row = well[0];
     const col = parseInt(well.slice(1),10);
     if (mode === 'row') return PALETTE[ROWS.indexOf(row) % PALETTE.length];
     if (mode === 'col') return PALETTE[(col-1) % PALETTE.length];
+    const labelSlotIdx = {label1:0, label2:1, label3:2}[mode];
+    if (labelSlotIdx !== undefined){
+      const val = (wellLabels[well] || ['','',''])[labelSlotIdx] || '';
+      if (!val) return '#B9C1B6'; // neutral grey: this well has no label in that slot
+      return labelColorMap.get(val) || PALETTE[0];
+    }
     return PALETTE[0];
   }
 
@@ -1128,6 +1139,19 @@
     const colorMode = document.getElementById('colorBy').value;
     const logY = document.getElementById('logY').checked;
 
+    // When coloring by a label slot, build a stable value->color mapping
+    // (sorted alphabetically so the same label always gets the same color
+    // across re-renders, not just whatever order wells happen to iterate in)
+    const labelSlotIdx = {label1:0, label2:1, label3:2}[colorMode];
+    if (labelSlotIdx !== undefined){
+      const uniqueVals = Array.from(new Set(
+        active.map(w => (wellLabels[w] || ['','',''])[labelSlotIdx] || '').filter(v => v)
+      )).sort();
+      labelColorMap = new Map(uniqueVals.map((v, i) => [v, PALETTE[i % PALETTE.length]]));
+    } else {
+      labelColorMap = new Map();
+    }
+
     // drop any highlighted wells that are no longer active/displayed
     highlightedWells.forEach(w => { if (!active.includes(w)) highlightedWells.delete(w); });
     const anyHighlight = highlightedWells.size > 0;
@@ -1152,13 +1176,16 @@
       wellTraceIndex[well] = i;
       const isHighlighted = highlightedWells.has(well);
       const isDimmed = anyHighlight && !isHighlighted;
+      const groupVal = labelSlotIdx !== undefined ? ((wellLabels[well] || ['','',''])[labelSlotIdx] || '(unlabeled)') : null;
+      const traceName = groupVal !== null ? well + ' \u2014 ' + groupVal : well;
+      const hoverExtra = groupVal !== null ? ('<br>' + escapeHtml(groupVal)) : '';
       traces.push({
         x: cycles, y: rfu,
         mode: 'lines',
-        name: well,
+        name: traceName,
         line: {color: colorFor(well, colorMode), width: isHighlighted ? 3.5 : 1.5},
         opacity: isDimmed ? 0.12 : (isHighlighted ? 1 : 0.85),
-        hovertemplate: 'Well '+well+'<br>Cycle %{x}<br>RFU %{y:.1f}<extra></extra>'
+        hovertemplate: 'Well '+well+hoverExtra+'<br>Cycle %{x}<br>RFU %{y:.1f}<extra></extra>'
       });
     });
 
