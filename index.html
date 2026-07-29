@@ -339,12 +339,16 @@
 
       <div id="labelControls" style="display:none; margin-bottom:12px;">
         <label class="field">
-          <span class="name">Group / sample label for selected wells</span>
+          <span class="name">Label text (type it once, then assign to slot 1/2/3 below)</span>
           <input type="text" id="groupLabelInput" placeholder="e.g. SpyCatcher-SpyTag, 9mer, 30C">
         </label>
         <div class="btn-row">
-          <button class="btn" id="applyLabel">Apply to selected</button>
-          <button class="btn secondary" id="clearLabelsForSelection">Erase label for selected</button>
+          <button class="btn" id="applyLabel1">Label 1</button>
+          <button class="btn" id="applyLabel2">Label 2</button>
+          <button class="btn" id="applyLabel3">Label 3</button>
+        </div>
+        <div class="btn-row">
+          <button class="btn secondary" id="clearLabelsForSelection">Erase labels for selected</button>
           <button class="btn secondary" id="clearLabelSelection">Clear selection</button>
         </div>
         <div class="status" id="labelSelCount">0 wells selected. Click or drag on the plate below.</div>
@@ -431,10 +435,6 @@
 <div class="page-wide">
   <div class="panel">
     <h2>Plate summary (Cq heatmap)</h2>
-    <p style="font-size:12px; color:var(--muted); margin-top:-4px;">
-      Every well, colored by Cq (pastel blue = low, white = median, pastel red = high), showing its Cq value
-      and sample ID (if labeled). Grey wells have no data or weren't selected as samples.
-    </p>
     <div class="plate-summary-wrap">
       <div class="plate-summary-grid" id="plateSummaryGrid"></div>
     </div>
@@ -457,11 +457,27 @@
   let dragMode = null;    // true = turning ON, false = turning OFF, during drag
   let highlightedWells = new Set(); // wells highlighted from Cq table clicks (empty = normal view)
   let wellTraceIndex = {};    // well -> index of its trace in the current graph
-  let wellLabels = {};        // well -> user-entered sample/group label
+  let wellLabels = {};        // well -> [label1, label2, label3] (up to 3 slots, any may be empty)
+  let showSampleIdColumn = false; // whether the Cq table's Sample ID column is currently shown
   let labelSelection = new Set(); // transient plate selection while in "Label groups" mode
   let plateMode = 'mark';     // 'mark' (toggle tube present) or 'label' (select wells to label)
   let wellCqLookup = {};      // well -> current computed Cq (for plate heatmap)
   let cqColorMin = 0, cqColorMax = 0, cqColorMedian = 0; // current Cq range, shared by table + plate heatmap colors
+
+  // ---------------- label helpers (up to 3 slots per well) ----------------
+  function hasAnyLabel(well){
+    const arr = wellLabels[well];
+    return !!(arr && arr.some(l => l && l.trim() !== ''));
+  }
+  function combinedLabel(well){
+    const arr = wellLabels[well];
+    if (!arr) return '';
+    return arr.filter(l => l && l.trim() !== '').join(' | ');
+  }
+  function setLabelSlot(well, slotIndex, text){
+    if (!wellLabels[well]) wellLabels[well] = ['', '', ''];
+    wellLabels[well][slotIndex] = text;
+  }
 
   // ---------------- column auto-detection ----------------
   function findCol(fields, candidates){
@@ -667,9 +683,9 @@
         div.dataset.well = well;
         if (!hasData.has(well)) div.classList.add('nodata');
         if (activeWells.has(well)) div.classList.add('active');
-        if (wellLabels[well]) div.classList.add('has-label');
+        if (hasAnyLabel(well)) div.classList.add('has-label');
         if (labelSelection.has(well)) div.classList.add('selected-for-label');
-        div.title = well + (wellLabels[well] ? ' \u2014 ' + wellLabels[well] : '');
+        div.title = well + (hasAnyLabel(well) ? ' \u2014 ' + combinedLabel(well) : '');
         attachWellEvents(div, well);
         td.appendChild(div);
         tr.appendChild(td);
@@ -742,13 +758,17 @@
     });
   });
 
-  document.getElementById('applyLabel').addEventListener('click', () => {
+  function applyLabelToSlot(slotIndex){
     if (!labelSelection.size){ alert('Click or drag-select wells on the plate first.'); return; }
     const label = document.getElementById('groupLabelInput').value.trim();
-    labelSelection.forEach(w => { wellLabels[w] = label; });
+    labelSelection.forEach(w => setLabelSlot(w, slotIndex, label));
     renderPlate();
     updateAll();
-  });
+  }
+  document.getElementById('applyLabel1').addEventListener('click', () => applyLabelToSlot(0));
+  document.getElementById('applyLabel2').addEventListener('click', () => applyLabelToSlot(1));
+  document.getElementById('applyLabel3').addEventListener('click', () => applyLabelToSlot(2));
+
   document.getElementById('clearLabelsForSelection').addEventListener('click', () => {
     if (!labelSelection.size){ alert('Click or drag-select wells first.'); return; }
     labelSelection.forEach(w => { delete wellLabels[w]; });
@@ -837,7 +857,7 @@
         const cell = document.createElement('div');
         cell.className = 'plate-summary-cell';
         const cq = wellCqLookup[well];
-        const label = wellLabels[well];
+        const label = combinedLabel(well);
 
         if (!activeWells.has(well) || !isFinite(cq)){
           cell.classList.add('empty');
@@ -875,7 +895,7 @@
   });
 
   document.getElementById('selectAllData').addEventListener('click', () => {
-    const labeled = Array.from(hasData).filter(w => wellLabels[w] && wellLabels[w].trim() !== '');
+    const labeled = Array.from(hasData).filter(w => hasAnyLabel(w));
     activeWells = new Set(labeled);
     renderPlate();
     updateAll();
@@ -1044,6 +1064,9 @@
 
     // Cq table
     cqRows.sort((a,b) => a.well.localeCompare(b.well, undefined, {numeric:true}));
+    showSampleIdColumn = cqRows.some(r => hasAnyLabel(r.well));
+    const sampleIdHeader = document.querySelector('#cqTable thead th[data-key="sampleId"]');
+    if (sampleIdHeader) sampleIdHeader.style.display = showSampleIdColumn ? '' : 'none';
     const tbody = document.querySelector('#cqTable tbody');
     tbody.innerHTML = '';
     cqRows.forEach(r => tbody.appendChild(makeCqRow(r)));
@@ -1072,10 +1095,14 @@
   function makeCqRow(r){
     const tr = document.createElement('tr');
     const cqText = isFinite(r.cq) ? r.cq.toFixed(2) : 'undetermined';
-    const sampleId = wellLabels[r.well] ? escapeHtml(wellLabels[r.well]) : '\u2014';
     const cqColor = isFinite(r.cq) ? cqColorScale(r.cq, cqColorMin, cqColorMedian, cqColorMax) : null;
     const cqStyle = cqColor ? ' style="background-color:'+cqColor+';"' : '';
-    tr.innerHTML = '<td>'+r.well+'</td><td'+cqStyle+'>'+cqText+'</td><td>'+sampleId+'</td>';
+    let html = '<td>'+r.well+'</td><td'+cqStyle+'>'+cqText+'</td>';
+    if (showSampleIdColumn){
+      const sampleId = hasAnyLabel(r.well) ? escapeHtml(combinedLabel(r.well)) : '\u2014';
+      html += '<td>'+sampleId+'</td>';
+    }
+    tr.innerHTML = html;
     tr.dataset.well = r.well;
     tr.classList.toggle('selected-row', highlightedWells.has(r.well));
     tr.addEventListener('click', () => toggleHighlight(r.well));
@@ -1159,7 +1186,7 @@
     if (!rows.length){ alert('No Cq data to export yet.'); return; }
     let csv = 'Well,Cq,Sample ID\n';
     rows.forEach(r => {
-      const sampleId = (wellLabels[r.well] || '').replace(/"/g, '""');
+      const sampleId = combinedLabel(r.well).replace(/"/g, '""');
       csv += r.well + ',' + (isFinite(r.cq)?r.cq.toFixed(3):'undetermined') + ',"' + sampleId + '"\n';
     });
     const blob = new Blob([csv], {type:'text/csv'});
@@ -1206,7 +1233,7 @@
     cqRows.forEach(r => cqAoa.push([
       r.well,
       isFinite(r.cq) ? Number(r.cq.toFixed(3)) : 'undetermined',
-      wellLabels[r.well] || ''
+      combinedLabel(r.well)
     ]));
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(cqAoa), 'Cq Values');
 
@@ -1223,7 +1250,7 @@
     const plateAoa = [[''].concat(COLS.map(String))];
     ROWS.forEach(r => {
       const row = [r];
-      COLS.forEach(c => row.push(wellLabels[r + c] || ''));
+      COLS.forEach(c => row.push(combinedLabel(r + c)));
       plateAoa.push(row);
     });
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(plateAoa), 'Plate Layout');
@@ -1251,7 +1278,7 @@
       if (!rows.length) return;
       rows.sort((a,b) => {
         if (key === 'well') return a.well.localeCompare(b.well, undefined, {numeric:true});
-        if (key === 'sampleId') return (wellLabels[a.well]||'').localeCompare(wellLabels[b.well]||'');
+        if (key === 'sampleId') return combinedLabel(a.well).localeCompare(combinedLabel(b.well));
         return (a[key]||0) - (b[key]||0);
       });
       const tbody = document.querySelector('#cqTable tbody');
