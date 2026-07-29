@@ -264,24 +264,17 @@
     box-shadow: inset 3px 0 0 var(--amber-dark);
     font-weight:600;
   }
-  .sample-id-cell{
-    display:flex;
-    align-items:center;
-    gap:2px;
+  table.cqtable td.pipe-col, table.cqtable th.pipe-col-th{
+    color:var(--muted);
+    text-align:center;
+    padding-left:6px;
+    padding-right:6px;
+    white-space:nowrap;
+    cursor:default;
   }
-  .sample-id-cell .label-slot{
-    display:inline-block;
-    width:90px;
-    min-width:90px;
-    max-width:90px;
-    overflow:hidden;
-    text-overflow:ellipsis;
+  table.cqtable td.label-col{
     white-space:nowrap;
     text-align:left;
-  }
-  .sample-id-cell .label-sep{
-    color:var(--muted);
-    flex-shrink:0;
   }
   .table-scroll{max-height:360px; overflow-y:auto; overflow-x:auto; border:1px solid var(--line); border-radius:4px;}
   .empty-note{
@@ -418,7 +411,15 @@
       </div>
       <div class="table-scroll">
         <table class="cqtable" id="cqTable">
-          <thead><tr><th data-key="well">Well</th><th data-key="cq">Cq</th><th data-key="sampleId">Sample ID</th></tr></thead>
+          <thead><tr>
+            <th data-key="well">Well</th>
+            <th data-key="cq">Cq</th>
+            <th data-key="label1" class="sample-id-th">Label 1</th>
+            <th class="pipe-col-th sample-id-th">&nbsp;</th>
+            <th data-key="label2" class="sample-id-th">Label 2</th>
+            <th class="pipe-col-th sample-id-th">&nbsp;</th>
+            <th data-key="label3" class="sample-id-th">Label 3</th>
+          </tr></thead>
           <tbody><tr><td colspan="3" class="empty-note">No wells selected yet.</td></tr></tbody>
         </table>
       </div>
@@ -500,20 +501,19 @@
     wellLabels[well][slotIndex] = text;
   }
 
-  // Renders a well's 3 label slots as fixed-width columns separated by "|",
-  // so the pipes and each label slot line up vertically across every row in
-  // the Cq table -- makes it easy to compare, say, all the "tether length"
-  // values (slot 2) by eye straight down the column.
+  // Renders a well's 3 label slots as real <td> cells (with thin "|" separator
+  // cells between them). Because these are genuine table columns, the browser
+  // auto-sizes each one to the widest content across ALL rows -- so every
+  // label is shown in full (no truncation) while the "|" separators and each
+  // label column still land in the same horizontal position on every row.
   function labelSlotsHtml(well){
     const arr = wellLabels[well] || ['', '', ''];
     const esc = s => escapeHtml(s || '');
-    return '<div class="sample-id-cell">' +
-      '<span class="label-slot" title="' + esc(arr[0]) + '">' + esc(arr[0]) + '</span>' +
-      '<span class="label-sep">|</span>' +
-      '<span class="label-slot" title="' + esc(arr[1]) + '">' + esc(arr[1]) + '</span>' +
-      '<span class="label-sep">|</span>' +
-      '<span class="label-slot" title="' + esc(arr[2]) + '">' + esc(arr[2]) + '</span>' +
-      '</div>';
+    return '<td class="label-col">' + esc(arr[0]) + '</td>' +
+      '<td class="pipe-col">|</td>' +
+      '<td class="label-col">' + esc(arr[1]) + '</td>' +
+      '<td class="pipe-col">|</td>' +
+      '<td class="label-col">' + esc(arr[2]) + '</td>';
   }
 
   // ---------------- column auto-detection ----------------
@@ -1108,8 +1108,9 @@
     // Cq table
     cqRows.sort((a,b) => a.well.localeCompare(b.well, undefined, {numeric:true}));
     showSampleIdColumn = cqRows.some(r => hasAnyLabel(r.well));
-    const sampleIdHeader = document.querySelector('#cqTable thead th[data-key="sampleId"]');
-    if (sampleIdHeader) sampleIdHeader.style.display = showSampleIdColumn ? '' : 'none';
+    document.querySelectorAll('#cqTable thead th.sample-id-th').forEach(th => {
+      th.style.display = showSampleIdColumn ? '' : 'none';
+    });
     const tbody = document.querySelector('#cqTable tbody');
     tbody.innerHTML = '';
     cqRows.forEach(r => tbody.appendChild(makeCqRow(r)));
@@ -1142,7 +1143,7 @@
     const cqStyle = cqColor ? ' style="background-color:'+cqColor+';"' : '';
     let html = '<td>'+r.well+'</td><td'+cqStyle+'>'+cqText+'</td>';
     if (showSampleIdColumn){
-      html += '<td>'+labelSlotsHtml(r.well)+'</td>';
+      html += labelSlotsHtml(r.well);
     }
     tr.innerHTML = html;
     tr.dataset.well = r.well;
@@ -1320,7 +1321,12 @@
       if (!rows.length) return;
       rows.sort((a,b) => {
         if (key === 'well') return a.well.localeCompare(b.well, undefined, {numeric:true});
-        if (key === 'sampleId') return combinedLabel(a.well).localeCompare(combinedLabel(b.well));
+        if (key === 'label1' || key === 'label2' || key === 'label3'){
+          const idx = {label1:0, label2:1, label3:2}[key];
+          const av = (wellLabels[a.well] || ['','',''])[idx] || '';
+          const bv = (wellLabels[b.well] || ['','',''])[idx] || '';
+          return av.localeCompare(bv);
+        }
         return (a[key]||0) - (b[key]||0);
       });
       const tbody = document.querySelector('#cqTable tbody');
