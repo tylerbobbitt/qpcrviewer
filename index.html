@@ -8,6 +8,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
 <style>
   :root{
     --bg: #F0F3EF;
@@ -180,6 +181,13 @@
     box-shadow: inset 0 1px 3px rgba(0,0,0,0.25), 0 0 0 2px rgba(232,163,61,0.25);
   }
   .well.active:hover, .well:not(.nodata):hover{transform:scale(1.08);}
+  .well.has-label{border-width:2px; border-color:var(--teal);}
+  .well.selected-for-label{
+    box-shadow: 0 0 0 2px #fff, 0 0 0 4px #2b6cb0, inset 0 1px 2px rgba(0,0,0,0.12);
+  }
+  .mode-btn.active{
+    background:var(--teal); color:#fff; border-color:var(--teal);
+  }
   .plate-legend{
     display:flex; gap:16px; margin-top:12px; font-size:11px; color:var(--muted); flex-wrap:wrap;
   }
@@ -281,17 +289,47 @@
     </div>
 
     <div class="panel">
-      <h2>3. Plate map &mdash; click or drag to mark tubes present</h2>
+      <h2>3. Plate map</h2>
+      <div class="btn-row" style="margin-bottom:10px;">
+        <button class="btn secondary mode-btn active" id="modeMark" data-mode="mark">Mark samples</button>
+        <button class="btn secondary mode-btn" id="modeLabel" data-mode="label">Label groups</button>
+      </div>
+
+      <div id="labelControls" style="display:none; margin-bottom:12px;">
+        <label class="field">
+          <span class="name">Group / sample label for selected wells</span>
+          <input type="text" id="groupLabelInput" placeholder="e.g. SpyCatcher-SpyTag, 9mer, 30C">
+        </label>
+        <div class="btn-row">
+          <button class="btn" id="applyLabel">Apply to selected</button>
+          <button class="btn secondary" id="clearLabelsForSelection">Erase label for selected</button>
+          <button class="btn secondary" id="clearLabelSelection">Clear selection</button>
+        </div>
+        <div class="status" id="labelSelCount">0 wells selected. Click or drag on the plate below.</div>
+      </div>
+
+      <p style="font-size:12px; color:var(--muted); margin:0 0 8px 0;">
+        <b>Mark samples</b> mode: click/drag toggles whether a well had a tube.
+        <b>Label groups</b> mode: click/drag selects wells, then type a label and apply it &mdash; useful for
+        tagging primer mixture / condition / replicate directly on the plate.
+      </p>
+
       <div class="plate-wrap">
         <table class="plate" id="plateTable"></table>
       </div>
-      <div class="plate-legend">
+
+      <div class="checkline" style="margin-top:12px;">
+        <input type="checkbox" id="heatmapToggle">
+        <label for="heatmapToggle" style="font-size:12px;">Color plate by Cq (heatmap: blue = low, red = high)</label>
+      </div>
+
+      <div class="plate-legend" id="plateLegend">
         <span><span class="dot" style="background:var(--well-empty);"></span>no data in file</span>
         <span><span class="dot" style="background:var(--well-off);"></span>data present, no tube</span>
         <span><span class="dot" style="background:var(--amber); border-color:var(--amber-dark);"></span>tube / sample</span>
       </div>
       <div class="btn-row">
-        <button class="btn secondary" id="selectAllData">Select all with data</button>
+        <button class="btn secondary" id="selectAllData">Select all with a sample</button>
         <button class="btn secondary" id="clearAll">Clear all</button>
       </div>
     </div>
@@ -301,17 +339,19 @@
   <div>
     <div class="panel">
       <h2>Amplification curves</h2>
-      <div id="graph"><div class="empty-note">Upload a CSV to see curves here.</div></div>
+      <div id="graph" style="display:none;"></div>
+      <div id="graphEmpty" class="empty-note">Upload a CSV to see curves here.</div>
     </div>
 
     <div class="panel">
       <h2>Cq values (recomputed at current threshold)</h2>
       <div class="btn-row" style="margin-bottom:10px;">
         <button class="btn" id="downloadCq">Download Cq table (CSV)</button>
+        <button class="btn secondary" id="clearHighlight">Clear selection (show all curves)</button>
       </div>
       <div class="table-scroll">
         <table class="cqtable" id="cqTable">
-          <thead><tr><th data-key="well">Well</th><th data-key="cq">Cq</th><th data-key="baseline">Baseline (mean RFU)</th></tr></thead>
+          <thead><tr><th data-key="well">Well</th><th data-key="cq">Cq</th><th data-key="sampleId">Sample ID</th></tr></thead>
           <tbody><tr><td colspan="3" class="empty-note">No wells selected yet.</td></tr></tbody>
         </table>
       </div>
@@ -333,6 +373,16 @@
         </table>
       </div>
     </div>
+
+    <div class="panel">
+      <h2>Export summary report</h2>
+      <p style="font-size:12px; color:var(--muted); margin-top:-4px;">
+        One Excel file with Cq values, midpoints, your plate layout (sample labels), and the settings used.
+      </p>
+      <div class="btn-row">
+        <button class="btn" id="downloadExcel">Download full report (.xlsx)</button>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -352,6 +402,11 @@
   let dragMode = null;    // true = turning ON, false = turning OFF, during drag
   let highlightedWells = new Set(); // wells highlighted from Cq table clicks (empty = normal view)
   let wellTraceIndex = {};    // well -> index of its trace in the current graph
+  let wellLabels = {};        // well -> user-entered sample/group label
+  let labelSelection = new Set(); // transient plate selection while in "Label groups" mode
+  let plateMode = 'mark';     // 'mark' (toggle tube present) or 'label' (select wells to label)
+  let wellCqLookup = {};      // well -> current computed Cq (for plate heatmap)
+  let cqColorMin = 0, cqColorMax = 0; // current Cq range, shared by table + plate heatmap colors
 
   // ---------------- column auto-detection ----------------
   function findCol(fields, candidates){
@@ -409,6 +464,7 @@
   function ingestRows(rows, fields){
     if (!fields || !rows.length) throw new Error('Empty file or no headers found.');
     highlightedWells = new Set();
+    labelSelection = new Set(); // wellLabels intentionally persist across uploads (same physical plate)
 
     // CFX exports come in two shapes:
     //  - WIDE: one row per cycle, one column per well (e.g. "A1","A2",...,"H12")
@@ -556,12 +612,18 @@
         div.dataset.well = well;
         if (!hasData.has(well)) div.classList.add('nodata');
         if (activeWells.has(well)) div.classList.add('active');
+        if (wellLabels[well]) div.classList.add('has-label');
+        if (labelSelection.has(well)) div.classList.add('selected-for-label');
+        div.title = well + (wellLabels[well] ? ' \u2014 ' + wellLabels[well] : '');
         attachWellEvents(div, well);
         td.appendChild(div);
         tr.appendChild(td);
       });
       plateTable.appendChild(tr);
     });
+
+    applyPlateHeatmap();
+    updateLegend();
   }
 
   function makeCell(tag, text, cls){
@@ -575,20 +637,26 @@
     div.addEventListener('mousedown', (e) => {
       if (!hasData.has(well)) return;
       e.preventDefault();
-      dragMode = !activeWells.has(well);
-      setWellState(well, dragMode);
+      if (plateMode === 'label'){
+        dragMode = !labelSelection.has(well);
+        setLabelSelectionState(well, dragMode);
+      } else {
+        dragMode = !activeWells.has(well);
+        setWellState(well, dragMode);
+      }
     });
     div.addEventListener('mouseenter', () => {
       if (dragMode === null) return;
       if (!hasData.has(well)) return;
-      setWellState(well, dragMode);
+      if (plateMode === 'label') setLabelSelectionState(well, dragMode);
+      else setWellState(well, dragMode);
     });
   }
 
   document.addEventListener('mouseup', () => {
     if (dragMode !== null){
       dragMode = null;
-      updateAll();
+      if (plateMode !== 'label') updateAll();
     }
   });
 
@@ -598,8 +666,93 @@
     if (div) div.classList.toggle('active', on);
   }
 
+  function setLabelSelectionState(well, on){
+    if (on) labelSelection.add(well); else labelSelection.delete(well);
+    const div = plateTable.querySelector('[data-well="'+well+'"]');
+    if (div) div.classList.toggle('selected-for-label', on);
+    document.getElementById('labelSelCount').textContent =
+      labelSelection.size + ' well' + (labelSelection.size === 1 ? '' : 's') + ' selected. Click or drag on the plate below.';
+  }
+
+  // ---------------- mode switching (mark tubes vs. label groups) ----------------
+  document.querySelectorAll('.mode-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      plateMode = btn.dataset.mode;
+      document.querySelectorAll('.mode-btn').forEach(b => b.classList.toggle('active', b === btn));
+      document.getElementById('labelControls').style.display = (plateMode === 'label') ? 'block' : 'none';
+      if (plateMode !== 'label'){
+        labelSelection.clear();
+        renderPlate();
+      }
+    });
+  });
+
+  document.getElementById('applyLabel').addEventListener('click', () => {
+    if (!labelSelection.size){ alert('Click or drag-select wells on the plate first.'); return; }
+    const label = document.getElementById('groupLabelInput').value.trim();
+    labelSelection.forEach(w => { wellLabels[w] = label; });
+    renderPlate();
+    updateAll();
+  });
+  document.getElementById('clearLabelsForSelection').addEventListener('click', () => {
+    if (!labelSelection.size){ alert('Click or drag-select wells first.'); return; }
+    labelSelection.forEach(w => { delete wellLabels[w]; });
+    renderPlate();
+    updateAll();
+  });
+  document.getElementById('clearLabelSelection').addEventListener('click', () => {
+    labelSelection.clear();
+    renderPlate();
+  });
+
+  // ---------------- Cq heatmap on the plate ----------------
+  const CQ_HEATMAP_NEUTRAL = 'hsl(110, 60%, 55%)';
+  function cqColorScale(cq, minCq, maxCq){
+    if (!isFinite(cq)) return null;
+    if (minCq === maxCq) return CQ_HEATMAP_NEUTRAL;
+    const t = Math.max(0, Math.min(1, (cq - minCq) / (maxCq - minCq)));
+    const hue = 220 - t * 220; // 220=blue (low Cq) -> 0=red (high Cq)
+    return 'hsl(' + hue.toFixed(0) + ', 70%, 55%)';
+  }
+
+  function applyPlateHeatmap(){
+    const heatmapOnNow = document.getElementById('heatmapToggle').checked;
+    ALL_WELLS.forEach(well => {
+      const div = plateTable.querySelector('[data-well="'+well+'"]');
+      if (!div) return;
+      const cq = wellCqLookup[well];
+      if (!heatmapOnNow || !activeWells.has(well) || !isFinite(cq)){
+        div.style.backgroundColor = '';
+      } else {
+        div.style.backgroundColor = cqColorScale(cq, cqColorMin, cqColorMax) || '';
+      }
+    });
+  }
+
+  function updateLegend(){
+    const legend = document.getElementById('plateLegend');
+    if (document.getElementById('heatmapToggle').checked){
+      legend.innerHTML =
+        '<span><span class="dot" style="background:hsl(220,70%,55%);"></span>low Cq</span>' +
+        '<span><span class="dot" style="background:hsl(110,60%,55%);"></span>mid Cq</span>' +
+        '<span><span class="dot" style="background:hsl(0,70%,55%);"></span>high Cq</span>' +
+        '<span><span class="dot" style="background:var(--well-empty);"></span>no data / not selected</span>';
+    } else {
+      legend.innerHTML =
+        '<span><span class="dot" style="background:var(--well-empty);"></span>no data in file</span>' +
+        '<span><span class="dot" style="background:var(--well-off);"></span>data present, no tube</span>' +
+        '<span><span class="dot" style="background:var(--amber); border-color:var(--amber-dark);"></span>tube / sample</span>';
+    }
+  }
+
+  document.getElementById('heatmapToggle').addEventListener('change', () => {
+    updateLegend();
+    updateAll();
+  });
+
   document.getElementById('selectAllData').addEventListener('click', () => {
-    activeWells = new Set(hasData);
+    const labeled = Array.from(hasData).filter(w => wellLabels[w] && wellLabels[w].trim() !== '');
+    activeWells = new Set(labeled);
     renderPlate();
     updateAll();
   });
@@ -683,11 +836,24 @@
     const active = Array.from(activeWells).sort();
 
     if (active.length === 0){
-      document.getElementById('graph').innerHTML = '<div class="empty-note">No wells selected. Click wells on the plate map to mark tubes present.</div>';
+      // Important: never overwrite #graph's innerHTML directly -- Plotly
+      // attaches internal state to that exact DOM node, and clobbering its
+      // children breaks future Plotly.react calls on it (this was the "graph
+      // won't reappear after reselecting" bug). Instead we purge Plotly's
+      // state properly and just hide the node, showing a sibling message div.
+      try { if (window.Plotly && document.getElementById('graph').data) Plotly.purge('graph'); } catch(e){}
+      document.getElementById('graph').style.display = 'none';
+      document.getElementById('graphEmpty').style.display = 'block';
+      document.getElementById('graphEmpty').textContent = 'No wells selected. Click wells on the plate map to mark tubes present.';
       document.querySelector('#cqTable tbody').innerHTML = '<tr><td colspan="3" class="empty-note">No wells selected yet.</td></tr>';
       document.querySelector('#midTable tbody').innerHTML = '<tr><td colspan="3" class="empty-note">No wells selected yet.</td></tr>';
+      wellCqLookup = {};
+      applyPlateHeatmap();
       return;
     }
+
+    document.getElementById('graphEmpty').style.display = 'none';
+    document.getElementById('graph').style.display = 'block';
 
     const threshold = getThreshold();
     const colorMode = document.getElementById('colorBy').value;
@@ -701,11 +867,13 @@
     const cqRows = [];
     const midRows = [];
     wellTraceIndex = {};
+    wellCqLookup = {};
 
     active.forEach((well, i) => {
       const {cycles, rfu, baseline} = getAdjustedCurve(well);
       const cq = computeCq(cycles, rfu, threshold);
       cqRows.push({well, cq, baseline});
+      wellCqLookup[well] = cq;
 
       // Midpoint is only meaningful if the well actually crossed the Cq
       // threshold (i.e. it amplified at all); otherwise it's noise, not a curve.
@@ -724,6 +892,11 @@
         hovertemplate: 'Well '+well+'<br>Cycle %{x}<br>RFU %{y:.1f}<extra></extra>'
       });
     });
+
+    // shared Cq color range for both the table cells and the plate heatmap
+    const finiteCqVals = cqRows.map(r => r.cq).filter(isFinite);
+    cqColorMin = finiteCqVals.length ? Math.min(...finiteCqVals) : 0;
+    cqColorMax = finiteCqVals.length ? Math.max(...finiteCqVals) : 0;
 
     const allCycles = active.flatMap(w => wellData[w].cycles);
     const layout = {
@@ -763,6 +936,8 @@
     });
 
     window._lastMidRows = midRows;
+
+    applyPlateHeatmap();
   }
 
   // Builds one <tr> for the Cq table, wired to click-to-highlight the
@@ -770,11 +945,20 @@
   function makeCqRow(r){
     const tr = document.createElement('tr');
     const cqText = isFinite(r.cq) ? r.cq.toFixed(2) : 'undetermined';
-    tr.innerHTML = '<td>'+r.well+'</td><td>'+cqText+'</td><td>'+r.baseline.toFixed(1)+'</td>';
+    const sampleId = wellLabels[r.well] ? escapeHtml(wellLabels[r.well]) : '\u2014';
+    const cqColor = isFinite(r.cq) ? cqColorScale(r.cq, cqColorMin, cqColorMax) : null;
+    const cqStyle = cqColor ? ' style="background-color:'+cqColor+';"' : '';
+    tr.innerHTML = '<td>'+r.well+'</td><td'+cqStyle+'>'+cqText+'</td><td>'+sampleId+'</td>';
     tr.dataset.well = r.well;
     tr.classList.toggle('selected-row', highlightedWells.has(r.well));
     tr.addEventListener('click', () => toggleHighlight(r.well));
     return tr;
+  }
+
+  function escapeHtml(s){
+    const div = document.createElement('div');
+    div.textContent = s;
+    return div.innerHTML;
   }
 
   // Click a row to add/remove its well from the highlighted set. When the set
@@ -846,9 +1030,10 @@
   document.getElementById('downloadCq').addEventListener('click', () => {
     const rows = window._lastCqRows || [];
     if (!rows.length){ alert('No Cq data to export yet.'); return; }
-    let csv = 'Well,Cq,Baseline\n';
+    let csv = 'Well,Cq,Sample ID\n';
     rows.forEach(r => {
-      csv += r.well + ',' + (isFinite(r.cq)?r.cq.toFixed(3):'undetermined') + ',' + r.baseline.toFixed(2) + '\n';
+      const sampleId = (wellLabels[r.well] || '').replace(/"/g, '""');
+      csv += r.well + ',' + (isFinite(r.cq)?r.cq.toFixed(3):'undetermined') + ',"' + sampleId + '"\n';
     });
     const blob = new Blob([csv], {type:'text/csv'});
     const url = URL.createObjectURL(blob);
@@ -856,6 +1041,11 @@
     a.href = url; a.download = 'cq_values.csv';
     a.click();
     URL.revokeObjectURL(url);
+  });
+
+  document.getElementById('clearHighlight').addEventListener('click', () => {
+    highlightedWells.clear();
+    applyHighlight();
   });
 
   document.getElementById('downloadMidpoint').addEventListener('click', () => {
@@ -873,6 +1063,59 @@
     URL.revokeObjectURL(url);
   });
 
+  document.getElementById('downloadExcel').addEventListener('click', () => {
+    if (typeof XLSX === 'undefined'){
+      alert('The Excel export library failed to load (check your internet connection) -- try refreshing the page.');
+      return;
+    }
+    const cqRows = window._lastCqRows || [];
+    const midRows = window._lastMidRows || [];
+    if (!cqRows.length){ alert('No data to export yet -- upload a file and select some wells first.'); return; }
+
+    const wb = XLSX.utils.book_new();
+
+    // Sheet 1: Cq values
+    const cqAoa = [['Well', 'Cq', 'Sample ID']];
+    cqRows.forEach(r => cqAoa.push([
+      r.well,
+      isFinite(r.cq) ? Number(r.cq.toFixed(3)) : 'undetermined',
+      wellLabels[r.well] || ''
+    ]));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(cqAoa), 'Cq Values');
+
+    // Sheet 2: Midpoints
+    const midAoa = [['Well', 'Midpoint Cycle', 'Max RFU']];
+    midRows.forEach(r => midAoa.push([
+      r.well,
+      isFinite(r.midpoint) ? Number(r.midpoint.toFixed(3)) : 'undetermined',
+      Number(r.maxRfu.toFixed(2))
+    ]));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(midAoa), 'Midpoints');
+
+    // Sheet 3: Plate layout -- all 96 wells, sample labels only where the user entered them
+    const plateAoa = [[''].concat(COLS.map(String))];
+    ROWS.forEach(r => {
+      const row = [r];
+      COLS.forEach(c => row.push(wellLabels[r + c] || ''));
+      plateAoa.push(row);
+    });
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(plateAoa), 'Plate Layout');
+
+    // Sheet 4: settings used, for reproducibility
+    const settingsAoa = [
+      ['Exported', new Date().toISOString()],
+      ['RFU threshold', getThreshold()],
+      ['Baseline subtraction', document.getElementById('baselineOn').checked ? 'On' : 'Off'],
+      ['Baseline start cycle', document.getElementById('baseStart').value],
+      ['Baseline end cycle', document.getElementById('baseEnd').value],
+      ['Wells with data in file', hasData.size],
+      ['Wells selected as samples', activeWells.size]
+    ];
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(settingsAoa), 'Settings');
+
+    XLSX.writeFile(wb, 'qpcr_summary.xlsx');
+  });
+
   // sortable table headers
   document.querySelectorAll('#cqTable th').forEach(th => {
     th.addEventListener('click', () => {
@@ -881,6 +1124,7 @@
       if (!rows.length) return;
       rows.sort((a,b) => {
         if (key === 'well') return a.well.localeCompare(b.well, undefined, {numeric:true});
+        if (key === 'sampleId') return (wellLabels[a.well]||'').localeCompare(wellLabels[b.well]||'');
         return (a[key]||0) - (b[key]||0);
       });
       const tbody = document.querySelector('#cqTable tbody');
