@@ -68,6 +68,48 @@
   }
   @media (max-width:900px){ .layout{grid-template-columns:1fr;} }
 
+  .page-wide{
+    padding:0 28px 40px 28px;
+  }
+
+  .plate-summary-wrap{width:100%;}
+  .plate-summary-grid{
+    display:grid;
+    grid-template-columns: 34px repeat(12, 1fr);
+    gap:3px;
+    width:100%;
+  }
+  .plate-summary-headcell{
+    display:flex; align-items:center; justify-content:center;
+    font-family:'IBM Plex Mono', monospace; font-size:11px; font-weight:600; color:var(--muted);
+    padding:2px 0;
+  }
+  .plate-summary-cell{
+    aspect-ratio:1.15/1;
+    border-radius:6px;
+    border:1px solid var(--line);
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    font-family:'IBM Plex Mono', monospace;
+    text-align:center;
+    overflow:hidden;
+    padding:2px;
+    min-width:0;
+  }
+  .plate-summary-cell.empty{
+    background:var(--well-empty);
+    color:var(--muted);
+  }
+  .plate-summary-cell .well-id{
+    font-size:9px; color:var(--muted); font-weight:600; line-height:1;
+  }
+  .plate-summary-cell .cq-val{
+    font-size:12px; font-weight:700; line-height:1.2; color:var(--ink);
+  }
+  .plate-summary-cell .sample-label{
+    font-size:7.5px; line-height:1.1; color:var(--ink);
+    max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+
   .panel{
     background:var(--panel);
     border:1px solid var(--line);
@@ -386,6 +428,19 @@
   </div>
 </div>
 
+<div class="page-wide">
+  <div class="panel">
+    <h2>Plate summary (Cq heatmap)</h2>
+    <p style="font-size:12px; color:var(--muted); margin-top:-4px;">
+      Every well, colored by Cq (pastel blue = low, white = median, pastel red = high), showing its Cq value
+      and sample ID (if labeled). Grey wells have no data or weren't selected as samples.
+    </p>
+    <div class="plate-summary-wrap">
+      <div class="plate-summary-grid" id="plateSummaryGrid"></div>
+    </div>
+  </div>
+</div>
+
 <script>
 (function(){
   "use strict";
@@ -406,7 +461,7 @@
   let labelSelection = new Set(); // transient plate selection while in "Label groups" mode
   let plateMode = 'mark';     // 'mark' (toggle tube present) or 'label' (select wells to label)
   let wellCqLookup = {};      // well -> current computed Cq (for plate heatmap)
-  let cqColorMin = 0, cqColorMax = 0; // current Cq range, shared by table + plate heatmap colors
+  let cqColorMin = 0, cqColorMax = 0, cqColorMedian = 0; // current Cq range, shared by table + plate heatmap colors
 
   // ---------------- column auto-detection ----------------
   function findCol(fields, candidates){
@@ -706,13 +761,37 @@
   });
 
   // ---------------- Cq heatmap on the plate ----------------
-  const CQ_HEATMAP_NEUTRAL = 'hsl(110, 60%, 55%)';
-  function cqColorScale(cq, minCq, maxCq){
+  // Diverging scale: lowest Cq -> pastel blue, median Cq -> white, highest Cq -> pastel red.
+  const CQ_COLOR_LOW  = {r:158, g:190, b:240}; // pastel blue
+  const CQ_COLOR_MID  = {r:255, g:255, b:255}; // white
+  const CQ_COLOR_HIGH = {r:240, g:150, b:148}; // pastel red
+
+  function lerpColor(c1, c2, t){
+    const r = Math.round(c1.r + (c2.r - c1.r) * t);
+    const g = Math.round(c1.g + (c2.g - c1.g) * t);
+    const b = Math.round(c1.b + (c2.b - c1.b) * t);
+    return 'rgb(' + r + ',' + g + ',' + b + ')';
+  }
+
+  function cqColorScale(cq, minCq, medCq, maxCq){
     if (!isFinite(cq)) return null;
-    if (minCq === maxCq) return CQ_HEATMAP_NEUTRAL;
-    const t = Math.max(0, Math.min(1, (cq - minCq) / (maxCq - minCq)));
-    const hue = 220 - t * 220; // 220=blue (low Cq) -> 0=red (high Cq)
-    return 'hsl(' + hue.toFixed(0) + ', 70%, 55%)';
+    if (minCq === maxCq) return 'rgb(255,255,255)'; // no spread -> neutral white
+    if (cq <= medCq){
+      const span = medCq - minCq;
+      const t = span === 0 ? 0 : Math.max(0, Math.min(1, (cq - minCq) / span));
+      return lerpColor(CQ_COLOR_LOW, CQ_COLOR_MID, t);
+    } else {
+      const span = maxCq - medCq;
+      const t = span === 0 ? 1 : Math.max(0, Math.min(1, (cq - medCq) / span));
+      return lerpColor(CQ_COLOR_MID, CQ_COLOR_HIGH, t);
+    }
+  }
+
+  function median(values){
+    if (!values.length) return 0;
+    const sorted = [...values].sort((a,b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    return sorted.length % 2 === 0 ? (sorted[mid-1] + sorted[mid]) / 2 : sorted[mid];
   }
 
   function applyPlateHeatmap(){
@@ -724,8 +803,53 @@
       if (!heatmapOnNow || !activeWells.has(well) || !isFinite(cq)){
         div.style.backgroundColor = '';
       } else {
-        div.style.backgroundColor = cqColorScale(cq, cqColorMin, cqColorMax) || '';
+        div.style.backgroundColor = cqColorScale(cq, cqColorMin, cqColorMedian, cqColorMax) || '';
       }
+    });
+  }
+
+  // Full-width Cq-heatmap plate view at the bottom of the page: always shows
+  // every well with its Cq value and sample ID (if labeled), independent of
+  // the "Color plate by Cq" toggle above (that one only affects the small
+  // interactive plate map used for marking/labeling).
+  function renderPlateSummary(){
+    const grid = document.getElementById('plateSummaryGrid');
+    grid.innerHTML = '';
+
+    const corner = document.createElement('div');
+    corner.className = 'plate-summary-headcell';
+    grid.appendChild(corner);
+    COLS.forEach(c => {
+      const hc = document.createElement('div');
+      hc.className = 'plate-summary-headcell';
+      hc.textContent = c;
+      grid.appendChild(hc);
+    });
+
+    ROWS.forEach(r => {
+      const rh = document.createElement('div');
+      rh.className = 'plate-summary-headcell';
+      rh.textContent = r;
+      grid.appendChild(rh);
+
+      COLS.forEach(c => {
+        const well = r + c;
+        const cell = document.createElement('div');
+        cell.className = 'plate-summary-cell';
+        const cq = wellCqLookup[well];
+        const label = wellLabels[well];
+
+        if (!activeWells.has(well) || !isFinite(cq)){
+          cell.classList.add('empty');
+          cell.innerHTML = '<span class="well-id">' + well + '</span>';
+        } else {
+          cell.style.backgroundColor = cqColorScale(cq, cqColorMin, cqColorMedian, cqColorMax) || '';
+          let html = '<span class="well-id">' + well + '</span><span class="cq-val">' + cq.toFixed(2) + '</span>';
+          if (label) html += '<span class="sample-label" title="' + escapeHtml(label) + '">' + escapeHtml(label) + '</span>';
+          cell.innerHTML = html;
+        }
+        grid.appendChild(cell);
+      });
     });
   }
 
@@ -733,9 +857,9 @@
     const legend = document.getElementById('plateLegend');
     if (document.getElementById('heatmapToggle').checked){
       legend.innerHTML =
-        '<span><span class="dot" style="background:hsl(220,70%,55%);"></span>low Cq</span>' +
-        '<span><span class="dot" style="background:hsl(110,60%,55%);"></span>mid Cq</span>' +
-        '<span><span class="dot" style="background:hsl(0,70%,55%);"></span>high Cq</span>' +
+        '<span><span class="dot" style="background:rgb(158,190,240);"></span>low Cq</span>' +
+        '<span><span class="dot" style="background:#fff;"></span>median Cq</span>' +
+        '<span><span class="dot" style="background:rgb(240,150,148);"></span>high Cq</span>' +
         '<span><span class="dot" style="background:var(--well-empty);"></span>no data / not selected</span>';
     } else {
       legend.innerHTML =
@@ -849,6 +973,7 @@
       document.querySelector('#midTable tbody').innerHTML = '<tr><td colspan="3" class="empty-note">No wells selected yet.</td></tr>';
       wellCqLookup = {};
       applyPlateHeatmap();
+      renderPlateSummary();
       return;
     }
 
@@ -897,6 +1022,7 @@
     const finiteCqVals = cqRows.map(r => r.cq).filter(isFinite);
     cqColorMin = finiteCqVals.length ? Math.min(...finiteCqVals) : 0;
     cqColorMax = finiteCqVals.length ? Math.max(...finiteCqVals) : 0;
+    cqColorMedian = median(finiteCqVals);
 
     const allCycles = active.flatMap(w => wellData[w].cycles);
     const layout = {
@@ -938,6 +1064,7 @@
     window._lastMidRows = midRows;
 
     applyPlateHeatmap();
+    renderPlateSummary();
   }
 
   // Builds one <tr> for the Cq table, wired to click-to-highlight the
@@ -946,7 +1073,7 @@
     const tr = document.createElement('tr');
     const cqText = isFinite(r.cq) ? r.cq.toFixed(2) : 'undetermined';
     const sampleId = wellLabels[r.well] ? escapeHtml(wellLabels[r.well]) : '\u2014';
-    const cqColor = isFinite(r.cq) ? cqColorScale(r.cq, cqColorMin, cqColorMax) : null;
+    const cqColor = isFinite(r.cq) ? cqColorScale(r.cq, cqColorMin, cqColorMedian, cqColorMax) : null;
     const cqStyle = cqColor ? ' style="background-color:'+cqColor+';"' : '';
     tr.innerHTML = '<td>'+r.well+'</td><td'+cqStyle+'>'+cqText+'</td><td>'+sampleId+'</td>';
     tr.dataset.well = r.well;
@@ -1159,6 +1286,7 @@
   hasData = new Set();
   activeWells = new Set();
   renderPlate();
+  renderPlateSummary();
 
 })();
 </script>
