@@ -416,10 +416,14 @@
 
     <div class="panel">
       <h2>Cq values (recomputed at current threshold)</h2>
+      <p style="font-size:12px; color:var(--muted); margin-top:-4px;">
+        Click a column header to sort (click again to reverse). Shift-click to add up to 3 sort levels.
+      </p>
       <div class="btn-row" style="margin-bottom:10px;">
         <button class="btn" id="downloadCq">Download Cq table (CSV)</button>
         <button class="btn secondary" id="clearHighlight">Clear selection (show all curves)</button>
       </div>
+      <div class="status" id="cqSortSummary">Not sorted \u2014 upload order.</div>
       <div class="table-scroll">
         <table class="cqtable" id="cqTable">
           <thead><tr>
@@ -445,10 +449,12 @@
       <p style="font-size:12px; color:var(--muted); margin-top:-4px;">
         For each well, the cycle where fluorescence crosses halfway between its own baseline and plateau.
         Only computed for wells that actually cross the Cq threshold above &mdash; flat/no-signal wells show as undetermined.
+        Click a column header to sort (click again to reverse); shift-click to add up to 3 sort levels.
       </p>
       <div class="btn-row" style="margin-bottom:10px;">
         <button class="btn" id="downloadMidpoint">Download midpoint table (CSV)</button>
       </div>
+      <div class="status" id="midSortSummary">Not sorted \u2014 upload order.</div>
       <div class="table-scroll">
         <table class="cqtable" id="midTable">
           <thead><tr>
@@ -1251,7 +1257,8 @@
     Plotly.react('graph', traces, layout, {responsive:true, displaylogo:false});
 
     // Cq table
-    cqRows.sort((a,b) => a.well.localeCompare(b.well, undefined, {numeric:true}));
+    if (cqSortCriteria.length) cqRows.sort((a,b) => compareRowsMulti(a, b, cqSortCriteria));
+    else cqRows.sort((a,b) => a.well.localeCompare(b.well, undefined, {numeric:true}));
     showSampleIdColumn = cqRows.some(r => hasAnyLabel(r.well));
     document.querySelectorAll('#cqTable thead th.sample-id-th, #midTable thead th.sample-id-th').forEach(th => {
       th.style.display = showSampleIdColumn ? '' : 'none';
@@ -1263,7 +1270,8 @@
     window._lastCqRows = cqRows;
 
     // Midpoint table
-    midRows.sort((a,b) => a.well.localeCompare(b.well, undefined, {numeric:true}));
+    if (midSortCriteria.length) midRows.sort((a,b) => compareRowsMulti(a, b, midSortCriteria));
+    else midRows.sort((a,b) => a.well.localeCompare(b.well, undefined, {numeric:true}));
     const midTbody = document.querySelector('#midTable tbody');
     midTbody.innerHTML = '';
     midRows.forEach(r => midTbody.appendChild(makeMidRow(r)));
@@ -1508,21 +1516,51 @@
     XLSX.writeFile(wb, 'qpcr_summary.xlsx');
   });
 
-  // ---------------- sortable table headers (click to sort, click again to reverse) ----------------
-  let cqSortState = {key: null, asc: true};
-  let midSortState = {key: null, asc: true};
+  // ---------------- sortable table headers ----------------
+  // Plain click: sort by that column alone (click again to reverse).
+  // Shift-click: add that column as an additional sort level, up to 3 total
+  // (shift-click a column already in the list to reverse just that level).
+  let cqSortCriteria = [];  // [{key, asc}, ...] in priority order, max length 3
+  let midSortCriteria = [];
 
-  function updateSortIndicators(tableSelector, sortState){
+  // Snapshot each table's header labels once, before any sort-arrow spans are
+  // ever injected, so the "Sorted by: ..." summary always shows clean text.
+  function buildColumnLabelMap(tableSelector){
+    const map = {};
+    document.querySelectorAll(tableSelector + ' thead th[data-key]').forEach(th => {
+      map[th.dataset.key] = th.textContent.trim();
+    });
+    return map;
+  }
+  const cqColumnLabels = buildColumnLabelMap('#cqTable');
+  const midColumnLabels = buildColumnLabelMap('#midTable');
+
+  function updateSortIndicators(tableSelector, criteria){
     document.querySelectorAll(tableSelector + ' thead th').forEach(th => {
       const old = th.querySelector('.sort-arrow');
       if (old) old.remove();
-      if (th.dataset.key && th.dataset.key === sortState.key){
+      const key = th.dataset.key;
+      if (!key) return;
+      const rank = criteria.findIndex(c => c.key === key);
+      if (rank !== -1){
         const arrow = document.createElement('span');
         arrow.className = 'sort-arrow';
-        arrow.textContent = sortState.asc ? ' \u25B2' : ' \u25BC';
+        arrow.textContent = ' ' + (criteria[rank].asc ? '\u25B2' : '\u25BC') + (criteria.length > 1 ? (rank+1) : '');
         th.appendChild(arrow);
       }
     });
+  }
+
+  function updateSortSummary(elementId, criteria, columnLabels){
+    const el = document.getElementById(elementId);
+    if (!el) return;
+    if (!criteria.length){
+      el.textContent = 'Not sorted \u2014 upload order. Click a header to sort, shift-click to add up to 3 levels.';
+      return;
+    }
+    el.textContent = 'Sorted by: ' + criteria.map(c =>
+      (columnLabels[c.key] || c.key) + (c.asc ? ' \u25B2' : ' \u25BC')
+    ).join(', then ');
   }
 
   // Generic comparator: well (alphanumeric), a label slot (alphanumeric), or
@@ -1540,43 +1578,64 @@
     return av - bv;
   }
 
+  // Applies each criterion in priority order; falls through to the next
+  // level only when the current one ties (Array.sort is stable in all
+  // modern browsers, so ties beyond 3 levels keep their prior relative order).
+  function compareRowsMulti(a, b, criteria){
+    for (const {key, asc} of criteria){
+      const cmp = compareRowsByKey(a, b, key);
+      if (cmp !== 0) return asc ? cmp : -cmp;
+    }
+    return 0;
+  }
+
+  function handleHeaderClick(e, th, criteria, rows, tbodySelector, rowBuilder, tableSelector, summaryId, columnLabels){
+    const key = th.dataset.key;
+    if (!key || !rows.length) return criteria;
+
+    if (e.shiftKey){
+      const existingIdx = criteria.findIndex(c => c.key === key);
+      if (existingIdx !== -1){
+        criteria[existingIdx].asc = !criteria[existingIdx].asc;
+      } else if (criteria.length < 3){
+        criteria.push({key, asc:true});
+      } else {
+        document.getElementById(summaryId).textContent =
+          'Already sorting by 3 levels \u2014 shift-click a highlighted column to change its direction, or click any header alone to start over.';
+        return criteria;
+      }
+    } else {
+      if (criteria.length === 1 && criteria[0].key === key){
+        criteria[0].asc = !criteria[0].asc;
+      } else {
+        criteria = [{key, asc:true}];
+      }
+    }
+
+    rows.sort((a,b) => compareRowsMulti(a, b, criteria));
+    const tbody = document.querySelector(tbodySelector);
+    tbody.innerHTML = '';
+    rows.forEach(r => tbody.appendChild(rowBuilder(r)));
+    updateSortIndicators(tableSelector, criteria);
+    updateSortSummary(summaryId, criteria, columnLabels);
+    return criteria;
+  }
+
   document.querySelectorAll('#cqTable th').forEach(th => {
-    th.addEventListener('click', () => {
-      const key = th.dataset.key;
-      if (!key) return; // pipe-separator header cells aren't sortable
-      const rows = window._lastCqRows || [];
-      if (!rows.length) return;
-
-      if (cqSortState.key === key) cqSortState.asc = !cqSortState.asc;
-      else { cqSortState.key = key; cqSortState.asc = true; }
-      const dir = cqSortState.asc ? 1 : -1;
-
-      rows.sort((a,b) => compareRowsByKey(a, b, key) * dir);
-
-      const tbody = document.querySelector('#cqTable tbody');
-      tbody.innerHTML = '';
-      rows.forEach(r => tbody.appendChild(makeCqRow(r)));
-      updateSortIndicators('#cqTable', cqSortState);
+    th.addEventListener('click', (e) => {
+      cqSortCriteria = handleHeaderClick(
+        e, th, cqSortCriteria, window._lastCqRows || [],
+        '#cqTable tbody', makeCqRow, '#cqTable', 'cqSortSummary', cqColumnLabels
+      );
     });
   });
 
   document.querySelectorAll('#midTable th').forEach(th => {
-    th.addEventListener('click', () => {
-      const key = th.dataset.key;
-      if (!key) return; // pipe-separator header cells aren't sortable
-      const rows = window._lastMidRows || [];
-      if (!rows.length) return;
-
-      if (midSortState.key === key) midSortState.asc = !midSortState.asc;
-      else { midSortState.key = key; midSortState.asc = true; }
-      const dir = midSortState.asc ? 1 : -1;
-
-      rows.sort((a,b) => compareRowsByKey(a, b, key) * dir);
-
-      const tbody = document.querySelector('#midTable tbody');
-      tbody.innerHTML = '';
-      rows.forEach(r => tbody.appendChild(makeMidRow(r)));
-      updateSortIndicators('#midTable', midSortState);
+    th.addEventListener('click', (e) => {
+      midSortCriteria = handleHeaderClick(
+        e, th, midSortCriteria, window._lastMidRows || [],
+        '#midTable tbody', makeMidRow, '#midTable', 'midSortSummary', midColumnLabels
+      );
     });
   });
 
